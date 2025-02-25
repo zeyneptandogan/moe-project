@@ -53,18 +53,14 @@ def parse_args(base_parser, args, namespace):
     # parser.add_argument("--cos-final-lr", default=1e-6, type=float)
     parser.add_argument("--iterations", default=15000, type=int)
     parser.add_argument("--warmup-steps", default=300, type=int)
-    parser.add_argument("--lr", default=1e-3, type=float)
+    parser.add_argument("--lr", default=2e-3, type=float)
     # wsd
     parser.add_argument("--wsd-final-lr-scale", default=0.0, type=float)
     parser.add_argument("--wsd-fract-decay", default=0.1, type=float)
-    # parser.add_argument("--wsd-exponential-decay", action="store_true")
-    parser.add_argument(
-        "--decay-type",
-        default="linear",
-        choices=["linear", "cosine", "exp", "miror_cosine", "square", "sqrt"],
-    )
+    #parser.add_argument("--wsd-exponential-decay", action="store_true")
+    parser.add_argument("--decay-type",default="linear",choices=["linear","cosine","exp","miror_cosine","square","sqrt"])
     # Optimization
-    parser.add_argument("--opt", default="adamw", choices=["adamw", "sgd", "SFAdamW"])
+    parser.add_argument("--opt", default="adamw", choices=["adamw", "sgd","SFAdamW"])
     parser.add_argument("--batch-size", default=50, type=int)
     parser.add_argument("--acc-steps", default=4, type=int)
     parser.add_argument("--weight-decay", default=1e-1, type=float)
@@ -152,7 +148,7 @@ def parse_args(base_parser, args, namespace):
         default="llama",
         choices=[
             "base",
-            "llama",
+            "llama"
         ],
     )
     parser.add_argument("--parallel-block", action="store_true")
@@ -182,5 +178,43 @@ def parse_args(base_parser, args, namespace):
     )
     parser.add_argument("--bias", default=False, type=bool)
     parser.add_argument("--compile", action="store_true")
+    ### moe params
+    parser.add_argument("--moe", action="store_true")
+    parser.add_argument(
+        "--moe-routing",
+        default="standard_gating",
+        type=str,
+        choices=["standard_gating", "expert_choice"],
+    )
+    parser.add_argument("--moe-num-experts", default=8, type=int)
+    parser.add_argument(  # only used for expert choice routing
+        "--capacity-factor", default=2.0, type=float
+    )
+    parser.add_argument(  # deepseek routing, experts that are always active
+        "--moe-num-shared-experts", default=0, type=int
+    )
+    parser.add_argument(
+        "--moe-router-loss",
+        default="load_balancing_z_loss",
+        type=str,
+        choices=["entropy", "load_balancing_only", "load_balancing_z_loss"],
+    )
+    parser.add_argument("--moe-num-experts-per-tok", default=2, type=int)
+    parser.add_argument("--moe-entropy-loss-factor", default=0.01, type=float)
+    parser.add_argument("--moe-aux-loss-factor", default=0.1, type=float)
+    parser.add_argument("--moe-z-loss-factor", default=0.01, type=float)
+    parser.add_argument(
+        "--moe-softmax-order",
+        type=str,
+        default="topk_softmax",
+        choices=["softmax_topk", "topk_softmax"],
+    )
+    parser.add_argument("--plot-router-logits", action="store_true")
     parser.add_argument("--mlp-dim-exp-factor", default=1.0, type=float)
+    ###
+    ## mup arguments
+    parser.add_argument("--scale-emb", default=10, type=int)
+    # the base model width that mup has been configured on
+    parser.add_argument("--scale-base-model", default=256, type=int)
+    parser.add_argument("--scale-depth", default=1.4, type=float)
     return parser.parse_args(args, namespace)

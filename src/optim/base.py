@@ -21,6 +21,7 @@ from .utils import (
     load_worker_state,
     save_checkpoint,
     save_worker_state,
+    visualize_routing,
 )
 
 
@@ -33,11 +34,6 @@ def train(
     distributed_backend,
     cfg,
 ):
-    not_compiled_model = model
-    if cfg.compile:
-        print(f"Compiling model ...")
-        model = torch.compile(model)
-
     if "cuda" in cfg.device:
         type_ctx = torch.amp.autocast(
             device_type="cuda",
@@ -73,7 +69,7 @@ def train(
         # Otherwise, the first avg will not be correctly computed, with a bias
         # towards the first sample and missing values for earlier iterations.
         weight_averager = WeightAverager(
-            not_compiled_model,
+            model,
             horizon=cfg.wa_horizon,
             interval=cfg.wa_interval,
             save_dir=None if cfg.wa_use_temp_dir else exp_dir / "avgs",
@@ -86,7 +82,7 @@ def train(
 
     if cfg.exponential_moving_average:
         ema = ExponentialWeightAverager(
-            not_compiled_model,
+            model,
             interval=cfg.ema_interval,
             decay=cfg.ema_decay,
             warmup=cfg.warmup_steps if cfg.ema_after_warmup else 0,
@@ -145,14 +141,13 @@ def train(
                 type_ctx,
                 distributed_backend,
                 cfg,
-                opt,
                 full_eval=(curr_iter in cfg.full_eval_at),
             )
 
             if curr_iter > cfg.wa_interval and cfg.weight_average:
                 eval_wa(
                     curr_iter,
-                    not_compiled_model,
+                    model,
                     weight_averager,
                     val_reader,
                     type_ctx,
@@ -163,7 +158,7 @@ def train(
             if cfg.exponential_moving_average:
                 eval_ema(
                     curr_iter,
-                    not_compiled_model,
+                    model,
                     ema,
                     val_reader,
                     type_ctx,
@@ -186,7 +181,7 @@ def train(
                     microstep_idx=microstep_idx,
                     gradient_accumulation_steps=cfg.acc_steps,
                 ):
-                    outputs = model(x, targets=y)
+                    outputs = model(x, targets=y, moe=cfg.moe)  # newly added for moe
 
             loss = outputs["loss"] / cfg.acc_steps
             loss.backward()
@@ -194,15 +189,13 @@ def train(
 
         if cfg.grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-        if cfg.opt == "SFAdamW":
-            opt.train()
         opt.step()
         scheduler.step()
         opt.zero_grad(set_to_none=True)
         if cfg.weight_average:
-            weight_averager.step(not_compiled_model, distributed_backend.is_master_process())
+            weight_averager.step(model, distributed_backend.is_master_process())
         if cfg.exponential_moving_average:
-            ema.step(not_compiled_model, distributed_backend.is_master_process())
+            ema.step(model, distributed_backend.is_master_process())
         dt = (time.perf_counter_ns() - t_start) / 1e9
 
         curr_iter += 1
@@ -213,6 +206,9 @@ def train(
             and distributed_backend.is_master_process()  # Only log on master rank
         ):
             train_loss = loss.detach().cpu().item() * cfg.acc_steps
+            train_aux_losses = {
+                f"train/{k}": v for k, v in outputs["aux_losses"].items()
+            }
 
             current_lrs = [param_group["lr"] for param_group in opt.param_groups]
 
@@ -230,6 +226,7 @@ def train(
                         "train/perplexity": 2.71828**train_loss,
                         "lr": current_lrs[0],
                         "iter_dt": dt,
+                        **train_aux_losses,
                     }
                 )
 
@@ -244,7 +241,6 @@ def eval_and_log(
     type_ctx,
     distributed_backend,
     cfg,
-    opt,
     full_eval=False,
 ):
     if not distributed_backend.is_master_process():
@@ -252,8 +248,6 @@ def eval_and_log(
         return
 
     model.eval()
-    if cfg.opt == "SFAdamW":
-        opt.eval()
 
     if curr_iter == cfg.iterations or full_eval:
         max_num_batches = val_reader.num_batches()
@@ -263,12 +257,14 @@ def eval_and_log(
     # to make sure we start from the beginning of the validation set,
     # i.e. repeat the same batches
     val_reader.set_step(0)
-    val_acc, val_loss, val_perplexity = eval(
+    val_acc, val_loss, val_perplexity, val_aux_losses, router_logits = eval(
         model,
         val_reader,
         cfg.device,
         max_num_batches=max_num_batches,
         ctx=type_ctx,
+        moe=cfg.moe, #moe added
+        get_router_logits=cfg.moe and cfg.plot_router_logits,
         cfg=cfg,
     )
 
@@ -286,6 +282,7 @@ def eval_and_log(
                 "final-val/loss": val_loss,
                 "final-val/perplexity": val_perplexity,
                 "final-val/acc": val_acc,
+                **val_aux_losses,
             }
         else:
             logs = {
@@ -293,7 +290,11 @@ def eval_and_log(
                 "val/loss": val_loss,
                 "val/perplexity": val_perplexity,
                 "val/acc": val_acc,
+                **val_aux_losses,
             }
+        if cfg.moe and cfg.plot_router_logits:
+            routing_logs = visualize_routing(router_logits, cfg)
+            logs = {**logs, **routing_logs}  #added for moe logging
 
         wandb.log(logs)
         if cfg.eval_seq_prefix != "none" and (

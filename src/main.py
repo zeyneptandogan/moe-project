@@ -2,7 +2,7 @@ import argparse
 import json
 from pathlib import Path
 import random
-import os
+import os 
 import schedulefree
 
 import numpy as np
@@ -42,6 +42,7 @@ def main(args):
             project=args.wandb_project,
             name=exp_name,
             config=vars(args),
+            entity="eliebak",
         )
         wandb.define_metric("iter")
         wandb.define_metric("train/*", step_metric="iter")
@@ -89,7 +90,7 @@ def main(args):
         )
     elif args.opt == "SFAdamW":
         opt = schedulefree.AdamWScheduleFree(
-            group_specs,
+            group_specs, 
             lr=args.lr,
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
@@ -107,6 +108,8 @@ def main(args):
         if args.scheduler in ["cos", "linear"]:
             # initial lr is args.lr / div_factor
             # final lr is initial_lr/final_div_factor = args.lr / div_factor / final_div_factor
+            # TODO: use this argument
+            # final_div_factor = args.lr / 1e2 / args.cos_final_lr
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 optimizer=opt,
                 max_lr=[group.get("lr", args.lr) for group in group_specs],
@@ -132,7 +135,7 @@ def main(args):
                 n_warmup=args.warmup_steps,
                 fract_decay=args.wsd_fract_decay,
                 init_div_factor=1e2,
-                final_lr_factor=args.wsd_final_lr_scale,  # should be 0 here
+                final_lr_factor=args.wsd_final_lr_scale, #should be 0 here
                 decay_type=args.decay_type,
             )
             scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda_schedule)
@@ -154,6 +157,10 @@ def main(args):
 
     elif distributed_backend.is_master_process():
         exp_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.compile:
+        print(f"Compiling model ...")
+        model = torch.compile(model)
 
     stats = train(
         model=model,
@@ -190,42 +197,29 @@ def get_exp_name(args, distributed_backend):
     if args.experiment_name is not None:
         return args.experiment_name
 
+    model_prefix = "moe_" if args.moe else ""  #newly added for moe
+
     rank = distributed_backend.rank
 
     exp_name = (
-        f"{args.dataset}_{args.model}_nlayers{args.n_layer}"
+        f"{args.dataset}_{model_prefix}{args.model}_nlayers{args.n_layer}"
         f"_nhead{args.n_head}_lr{args.lr}"
         f"_sched_{args.scheduler}_warmup{args.warmup_steps}"
         f"_decay_{args.decay_type}_{args.wsd_fract_decay}"
         f"_iter{args.iterations}"
         f"_bs{args.batch_size}x{args.acc_steps}_ws{args.world_size}"
     )
-    # for mup
-    if args.model == "mup_noam":
-        exp_name = (
-            f"{args.dataset}_{args.model}"
-            f"_opt{args.opt}"
-            f"_nlayers{args.n_layer}"
-            # f"_nhead{args.n_head}"
-            f"_lr{args.lr}"
-            f"_sched_{args.scheduler}"
-            f"_decay_{args.decay_type}"
-            # f"_warmup{args.warmup_steps}"
-            f"_iter{args.iterations}"
-            f"_init{args.init_std}_sce{args.scale_emb}"
-            f"_scd{args.scale_depth}"
-            # f"_bs{args.batch_size}x{args.acc_steps}_ws{args.world_size}"
-        )
+   
     if args.wandb_run_prefix != "none":
         exp_name = args.wandb_run_prefix + "_" + exp_name
     exp_name += f"_seed{args.seed - rank}"
     exp_name += f"_data_seed{args.data_seed}"
 
     if args.weight_average:
-        exp_name += f"_WA"
+        exp_name+= f"_WA"
     if args.opt == "SFAdamW":
-        exp_name += f"_beta1_{args.beta1}"
-        exp_name += f"_beta2_{args.beta2}"
+        exp_name+= f"_beta1_{args.beta1}"
+        exp_name+= f"_beta2_{args.beta2}"
     return exp_name
 
 
@@ -238,7 +232,9 @@ def get_data_readers(args, verbose=True):
         seed=args.data_seed,
         with_replacement=False,
         auto_shard=True,
-        keep_in_ram=args.data_in_ram,
+        #keep_in_ram=args.data_in_ram,  #??
+        keep_in_ram=True,
+
     )
     val_reader = DataReader(
         data_src=data_srcs["val"],
@@ -247,7 +243,8 @@ def get_data_readers(args, verbose=True):
         seed=args.data_seed,
         with_replacement=False,
         auto_shard=False,  # NOTE Identical Per Rank
-        keep_in_ram=args.data_in_ram,
+        #keep_in_ram=args.data_in_ram,
+        keep_in_ram=True,
     )
 
     if verbose:

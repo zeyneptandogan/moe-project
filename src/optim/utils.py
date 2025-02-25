@@ -40,12 +40,18 @@ def cos_inf_schedule(n_iterations, n_warmup, div_factor, final_div_factor, n_inf
     n_anneal_steps = n_iterations - n_inf
 
     def schedule(step):
+        # Warmup phase: Step < n_warmup
         if step < n_warmup:
+            # Linearly increase LR from base_lr to max_lr
             return (step / n_warmup) + (1 - step / n_warmup) / div_factor
+        # Cosine annealing phase: n_warmup ≤ Step < n_anneal_steps
         elif step < n_anneal_steps:
+            # Compute progress in cosine decay range (normalized 0 to 1)
             t = (step - n_warmup) / (n_anneal_steps - n_warmup)
+            # Compute cosine decay learning rate
             lr = final_lr + 0.5 * (max_lr - final_lr) * (1 + np.cos(np.pi * t))
             return lr
+        # Final constant phase: Step ≥ n_anneal_steps
         else:
             return final_lr
 
@@ -71,15 +77,15 @@ def wsd_schedule(
         schedule: a function that takes the current iteration and
         returns the multiplicative factor for the learning rate
     """
-    n_anneal_steps = int(fract_decay * n_iterations)
-    n_hold = n_iterations - n_anneal_steps
+    n_anneal_steps = int(fract_decay * n_iterations) # Number of decay steps
+    n_hold = n_iterations - n_anneal_steps # Hold phase (constant LR)
 
     def schedule(step):
-        if step < n_warmup:
+        if step < n_warmup: # (1) Warmup Phase
             return (step / n_warmup) + (1 - step / n_warmup) / init_div_factor
-        elif step < n_hold:
+        elif step < n_hold: # (2) Hold Phase
             return 1.0
-        elif step < n_iterations:
+        elif step < n_iterations: # (3) Decay Phase
             if decay_type == "linear":
                 return final_lr_factor + (1 - final_lr_factor) * (
                     1 - (step - n_hold) / n_anneal_steps
@@ -132,26 +138,62 @@ def eval(
     device="cpu",
     max_num_batches=24,
     ctx=nullcontext(),
+    moe=False,
+    get_router_logits=False,
     cfg=None,
 ):
     assert model.training == False
 
-    loss_list_val, acc_list = [], []
+    loss_list_val, acc_list, loss_list_aux_val = [], [], {}
+
+    router_logits = []
 
     for idx in range(max_num_batches):
         x, y = get_batch(reader, device=device)
         with ctx:
-            outputs = model(x, targets=y, get_logits=True)
+            outputs = model(x, targets=y, get_logits=True, moe=moe)
         val_loss = outputs["loss"]
 
         loss_list_val.append(val_loss)
         acc_list.append((outputs["logits"].argmax(-1) == y).float().mean())
 
+        # auxiliary losses are optional
+        for k, v in outputs["aux_losses"].items():
+            loss_list_aux_val[k] = loss_list_aux_val.get(k, [])
+            loss_list_aux_val[k].append(v)
+
+        # router logits for MoE visualization
+        if get_router_logits:
+            # shape [layers, batch_size * sequence_length, num_experts]
+            logits = outputs["router_logits"]
+            # shape [max_batches, layers, batch_size * sequence_length, num_experts]
+            router_logits.append(logits)
+
     val_acc = torch.stack(acc_list).mean().item()
     val_loss = torch.stack(loss_list_val).mean().item()
     val_perplexity = 2.71828**val_loss
+    val_aux_losses = {
+        f"val/{k}": torch.stack(v).mean().item() for k, v in loss_list_aux_val.items()
+    }
 
-    return val_acc, val_loss, val_perplexity
+    if get_router_logits:
+        # filter out the router logits that are not of the expected shape (happens for the last batch in
+        # dataloader has a different batch size than the others)
+        if cfg:
+            intended_size = cfg.batch_size * cfg.sequence_length
+        else:
+            intended_size = x.shape[0] * x.shape[1]
+        # shape [batches - 1, layers, batch_size * sequence_length, num_experts]
+        router_logits = (
+            torch.stack(
+                [rl for rl in router_logits if rl.shape[1] == intended_size],
+                dim=0,
+            )
+            .detach()
+            .cpu()
+        )
+
+    return val_acc, val_loss, val_perplexity, val_aux_losses, router_logits
 
 
 @torch.no_grad()
@@ -286,3 +328,37 @@ def load_worker_state(ckpt_dir: Path):
     torch.cuda.set_rng_state(worker_state["rng_torch_gpu"])
     np.random.set_state(worker_state["rng_np"])
     random.setstate(worker_state["rng_python"])
+
+def visualize_routing(router_logits, extra_args):
+    # router_logits: [batches, layers, batch_size * sequence_length, num_experts]
+    logs = {}
+
+    n_layers = extra_args.n_layer
+    num_experts = extra_args.moe_num_experts
+    num_experts_per_tok = extra_args.moe_num_experts_per_tok
+
+    # histogram over all logits to see distribution
+    logs["router/logits"] = wandb.Histogram(
+        router_logits.type(torch.float32).flatten().cpu().numpy()
+    )
+
+    # distribution over experts for layer 0, layer n/2, n-1
+    for layer in [0, n_layers // 2, n_layers - 1]:
+        router_logits_layer = router_logits[:, layer]
+        # shape [batches, batch_size * sequence_length, num_experts_per_tok]
+        weights, selected_experts = torch.topk(
+            router_logits_layer, num_experts_per_tok, dim=-1
+        )
+        # shape [batches, batch_size * sequence_length, num_experts_per_tok, num_experts]
+        expert_mask = F.one_hot(selected_experts, num_experts)
+        # For a given token, determine if it was routed to a given expert.
+        # Shape: [batches, batch_size * sequence_length, num_experts]
+        expert_mask, _ = torch.max(expert_mask, dim=-2)
+        # shape [num_experts]
+        tokens_per_expert = torch.mean(expert_mask, dim=(0, 1), dtype=torch.float32)
+        layer_token_routing = {
+            f"router/layer_{layer}_expert_{i}_selection": tokens_per_expert[i].item()
+            for i in range(num_experts)
+        }
+        logs.update(layer_token_routing)
+    return logs
