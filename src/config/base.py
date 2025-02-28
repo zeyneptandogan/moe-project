@@ -132,6 +132,7 @@ def parse_args(base_parser, args, namespace):
             "slimpajama",
             "slimpajama_chunk1",
             "redpajamav2",
+            "fineweb",
         ],
     )
     parser.add_argument(

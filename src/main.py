@@ -42,7 +42,7 @@ def main(args):
             project=args.wandb_project,
             name=exp_name,
             config=vars(args),
-            entity="eliebak",
+            entity="Moe-tmp",
         )
         wandb.define_metric("iter")
         wandb.define_metric("train/*", step_metric="iter")

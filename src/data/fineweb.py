@@ -4,6 +4,8 @@ import numpy as np
 import tiktoken
 from datasets import load_dataset
 
+os.environ["HF_HOME"] = os.path.expanduser("~/moe-project/huggingface_cache")
+
 tknzr = tiktoken.get_encoding("gpt2")
 
 def get_fineweb_data(datasets_base_dir, num_proc=40):
@@ -12,8 +14,7 @@ def get_fineweb_data(datasets_base_dir, num_proc=40):
     
     if not os.path.exists(os.path.join(FW_DATA_PATH, "train.bin")):
         os.makedirs(FW_DATA_PATH, exist_ok=True)
-        dataset = load_dataset("HuggingFaceFW/fineweb-edu", ame="sample-10BT")
-
+        dataset = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT")
         # Split dataset into train and validation sets
         split_dataset = dataset["train"].train_test_split(
             test_size=0.0005, seed=2357, shuffle=True

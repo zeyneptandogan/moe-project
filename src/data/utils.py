@@ -10,6 +10,7 @@ from .arxiv import get_arxiv_2000, get_arxiv_full
 from .openwebtext2 import get_openwebtext2_data
 from .redpajama import get_redpajama_data, get_redpajamav2_data
 from .slimpajama import get_slimpajama_data
+from .fineweb import get_fineweb_data
 
 
 def get_dataset(args) -> Dict[str, np.ndarray]:
@@ -39,6 +40,8 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
         return get_redpajamav2_data(args.datasets_dir)
     if args.dataset == "slimpajama":
         return get_slimpajama_data(args.datasets_dir)
+    if args.dataset == "fineweb":
+        return get_fineweb_data(args.datasets_dir)
     else:
         raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
 
