@@ -16,7 +16,10 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Te
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device)  # type: ignore
     freqs = torch.outer(t, freqs).float()  # type: ignore
-    return torch.polar(torch.ones_like(freqs), freqs)  # complex64
+    cos_freqs = torch.cos(freqs)
+    sin_freqs = torch.sin(freqs)
+    # Stack the cos and sin parts in the last dimension to simulate complex numbers
+    return torch.stack((cos_freqs, sin_freqs), dim=-1)
 
 
 def _reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -26,25 +29,34 @@ def _reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Te
     """
     ndim = x.ndim
     assert 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1]), (
-        freqs_cis.shape,
-        (x.shape[1], x.shape[-1]),
-    )
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    assert freqs_cis.shape[:-1] == (x.shape[1], x.shape[-2])
+    # New shape for broadcasting
+    shape = [
+        1 if i != 1 and i != ndim - 2 else d for i, d in enumerate(x.shape[:-1])
+    ] + [2]
     return freqs_cis.view(*shape)
-
 
 
 def apply_rotary_emb(q, k, freqs_cis):
     # q, k: (B, T, nh, hs)
     # freq_cis: (T, hs)
     # return: (B, T, nh, hs), (B, T, nh, hs)
-    q_ = torch.view_as_complex(q.float().reshape(*q.shape[:-1], -1, 2))
-    k_ = torch.view_as_complex(k.float().reshape(*k.shape[:-1], -1, 2))
-    freqs_cis = _reshape_for_broadcast(freqs_cis, q_)
-    xq_out = torch.view_as_real(q_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(k_ * freqs_cis).flatten(3)
-    return xq_out.type_as(q), xk_out.type_as(k)
+    q = q.float().reshape(*q.shape[:-1], -1, 2)
+    k = k.float().reshape(*k.shape[:-1], -1, 2)
+
+    freqs_cis = _reshape_for_broadcast(freqs_cis, q)
+
+    # Perform manual "complex" multiplication
+    q_cos = q[..., 0] * freqs_cis[..., 0] - q[..., 1] * freqs_cis[..., 1]
+    q_sin = q[..., 0] * freqs_cis[..., 1] + q[..., 1] * freqs_cis[..., 0]
+    k_cos = k[..., 0] * freqs_cis[..., 0] - k[..., 1] * freqs_cis[..., 1]
+    k_sin = k[..., 0] * freqs_cis[..., 1] + k[..., 1] * freqs_cis[..., 0]
+
+    # Combine the results back into the interleaved format expected by q and k
+    q_out = torch.stack((q_cos, q_sin), dim=-1).reshape(q.shape).flatten(3)
+    k_out = torch.stack((k_cos, k_sin), dim=-1).reshape(k.shape).flatten(3)
+
+    return q_out, k_out
 
 
 class RMSNorm(nn.Module):

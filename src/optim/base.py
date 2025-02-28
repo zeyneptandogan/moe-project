@@ -34,6 +34,12 @@ def train(
     distributed_backend,
     cfg,
 ):
+    not_compiled_model = model
+    if cfg.compile:
+        print(f"Compiling model ...")
+        model = torch.compile(model)
+        print(f"Model compiled.")
+
     if "cuda" in cfg.device:
         type_ctx = torch.amp.autocast(
             device_type="cuda",
@@ -69,7 +75,7 @@ def train(
         # Otherwise, the first avg will not be correctly computed, with a bias
         # towards the first sample and missing values for earlier iterations.
         weight_averager = WeightAverager(
-            model,
+            not_compiled_model,
             horizon=cfg.wa_horizon,
             interval=cfg.wa_interval,
             save_dir=None if cfg.wa_use_temp_dir else exp_dir / "avgs",
@@ -82,7 +88,7 @@ def train(
 
     if cfg.exponential_moving_average:
         ema = ExponentialWeightAverager(
-            model,
+            not_compiled_model,
             interval=cfg.ema_interval,
             decay=cfg.ema_decay,
             warmup=cfg.warmup_steps if cfg.ema_after_warmup else 0,
@@ -147,7 +153,7 @@ def train(
             if curr_iter > cfg.wa_interval and cfg.weight_average:
                 eval_wa(
                     curr_iter,
-                    model,
+                    not_compiled_model,
                     weight_averager,
                     val_reader,
                     type_ctx,
@@ -158,7 +164,7 @@ def train(
             if cfg.exponential_moving_average:
                 eval_ema(
                     curr_iter,
-                    model,
+                    not_compiled_model,
                     ema,
                     val_reader,
                     type_ctx,
@@ -187,15 +193,24 @@ def train(
             loss.backward()
             substep += 1
 
+        # norms logging per layer
+        if cfg.wandb:
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    grad_norm = param.grad.norm(2).item() # grad norm
+                    wandb.log({f"Grad Norm/{name}": grad_norm})
+                param_norm = param.norm(2).item()  # parameter norm
+                wandb.log({f"Param Norm/{name}": param_norm})
+
         if cfg.grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt.step()
         scheduler.step()
         opt.zero_grad(set_to_none=True)
         if cfg.weight_average:
-            weight_averager.step(model, distributed_backend.is_master_process())
+            weight_averager.step(not_compiled_model, distributed_backend.is_master_process())
         if cfg.exponential_moving_average:
-            ema.step(model, distributed_backend.is_master_process())
+            ema.step(not_compiled_model, distributed_backend.is_master_process())
         dt = (time.perf_counter_ns() - t_start) / 1e9
 
         curr_iter += 1

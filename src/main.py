@@ -158,10 +158,6 @@ def main(args):
     elif distributed_backend.is_master_process():
         exp_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.compile:
-        print(f"Compiling model ...")
-        model = torch.compile(model)
-
     stats = train(
         model=model,
         opt=opt,
@@ -232,9 +228,7 @@ def get_data_readers(args, verbose=True):
         seed=args.data_seed,
         with_replacement=False,
         auto_shard=True,
-        #keep_in_ram=args.data_in_ram,  #??
-        keep_in_ram=True,
-
+        keep_in_ram=args.data_in_ram
     )
     val_reader = DataReader(
         data_src=data_srcs["val"],
