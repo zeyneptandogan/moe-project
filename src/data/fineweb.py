@@ -34,14 +34,12 @@ def get_fineweb_data(datasets_base_dir, num_proc=40):
             num_proc=num_proc,
         )
 
-        # Save tokenized dataset as .bin files
         for split, dset in tokenized.items():
             arr_len = np.sum(dset["len"])
             filename = os.path.join(FW_DATA_PATH, f"{split}.bin")
-            dtype = np.uint16  # Since GPT-2 token IDs < 65536
-
+            dtype = np.uint16  # (can do since enc.max_token_value == 50256 is < 2**16)
             arr = np.memmap(filename, dtype=dtype, mode="w+", shape=(arr_len,))
-            total_batches = min(1024, len(dset))  # Adapt batch size
+            total_batches = min(1024, len(dset))
 
             idx = 0
             for batch_idx in tqdm(range(total_batches), desc=f"writing {filename}"):
@@ -49,9 +47,9 @@ def get_fineweb_data(datasets_base_dir, num_proc=40):
                     num_shards=total_batches, index=batch_idx, contiguous=True
                 ).with_format("numpy")
                 arr_batch = np.concatenate(batch["ids"])
-                arr[idx : idx + len(arr_batch)] = arr_batch  # Store tokens
+                arr[idx : idx + len(arr_batch)] = arr_batch
                 idx += len(arr_batch)
-            arr.flush()  # Save to disk
+            arr.flush()
 
     return {
         "train": os.path.join(FW_DATA_PATH, "train.bin"),

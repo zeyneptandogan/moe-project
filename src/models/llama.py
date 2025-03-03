@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from models.base import CausalSelfAttention, GPTBase
+from models.moe import MoE
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -212,7 +213,7 @@ class Llama(GPTBase):
         n_params = sum(p.numel() for p in self.parameters())
         return n_params
 
-    def forward(self, idx, targets=None, get_logits=False):
+    def forward(self, idx, targets=None, get_logits=False, moe=False):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -227,10 +228,18 @@ class Llama(GPTBase):
         x = self.transformer.drop(tok_emb)
         freqs_cis = self.freqs_cis.to(x.device)[pos] #freqs_cis stores positional encodings, retrieved using pos.
 
-        for block in self.transformer.h: # Loops through all transformer layers (self.transformer.h).
-            x = block(x, freqs_cis=freqs_cis) 
-            # freqs_cis is passed for positional encoding.
-        x = self.transformer.ln_f(x) # Apply Final Layer Normalization
+        # router logits is a list for each layer's routing, each of shape (b * seq_len, n_experts)
+        router_logits = []
+        # experts is a list for each layer's selected experts, shape (b * seq_len, topk)
+        experts = []
+
+        for block in self.transformer.h:
+            x, logits_and_experts = block(x, freqs_cis=freqs_cis)
+            if len(logits_and_experts) > 0:
+                router_logits.append(logits_and_experts["router_logits"])
+                experts.append(logits_and_experts["selected_experts"])
+        x = self.transformer.ln_f(x)
+
 
         # aux_losses is a dict with keys for different auxiliary losses
         aux_losses = {}
