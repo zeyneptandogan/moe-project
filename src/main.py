@@ -42,12 +42,14 @@ def main(args):
             project=args.wandb_project,
             name=exp_name,
             config=vars(args),
-            entity="Moe-tmp",
+            entity="Moe-tmp",  # Organization name
         )
         wandb.define_metric("iter")
         wandb.define_metric("train/*", step_metric="iter")
         wandb.define_metric("val/*", step_metric="iter")
         wandb.define_metric("lr", step_metric="iter")
+        print(f"Logging to wandb as {wandb.run.name}")
+        print("W&B Run URL:", wandb.run.get_url())
 
     print(f"Starting Experiment: {exp_name}")
     print(f"Experiment Directory: {exp_dir}")
@@ -64,6 +66,41 @@ def main(args):
     group_specs = distributed_backend.get_raw_model(model).get_parameter_group_specs()
     param_name_mapping = {p_name: p for p_name, p in model.named_parameters()}
     optimized_params_cnt = 0
+
+    if False and args.moe:
+        # MoE with diff lr for non-experts and experts
+        expert_param_names = [
+            n for n, p in model.named_parameters() if ".mlp.experts." in n
+        ]
+        non_expert_param_names = [
+            n for n, p in model.named_parameters()
+            if ".mlp.experts." not in n and "ln" not in n and "wte" not in n
+        ]
+        layernorm_param_names = [
+            n for n, p in model.named_parameters() if "ln" in n or "wte" in n
+        ]
+
+        group_specs = [
+            {
+                "params": expert_param_names,
+                "lr": args.expert_lr,
+                "weight_decay": args.weight_decay,
+            },
+            {
+                "params": non_expert_param_names,
+                "lr": args.lr,
+                "weight_decay": args.weight_decay,
+            },
+            {
+                "params": layernorm_param_names,
+                "lr": args.lr,
+                "weight_decay": 0.0,
+            }
+        ]
+    else:
+        for spec in group_specs:
+            spec["lr"] = args.lr # add lr for group specs since we dont give lr in optimizer explicitly
+    
     for g in group_specs:
         params = []
         for p_name in g["params"]:
@@ -76,6 +113,8 @@ def main(args):
     params_cnt = distributed_backend.get_raw_model(model).get_num_params()
     print("number of parameters: %.2fM" % (params_cnt / 1e6,))
     print("number of optimized parameters: %.2fM" % (optimized_params_cnt / 1e6,))
+
+
     if args.wandb and distributed_backend.is_master_process():
         wandb.log(
             {"parameters": params_cnt, "optimized_parameters": optimized_params_cnt}
@@ -84,14 +123,14 @@ def main(args):
     if args.opt == "adamw":
         opt = torch.optim.AdamW(
             group_specs,
-            lr=args.lr,
+            #lr=args.lr,
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
         )
     elif args.opt == "SFAdamW":
         opt = schedulefree.AdamWScheduleFree(
             group_specs, 
-            lr=args.lr,
+            #lr=args.lr,
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
             warmup_steps=args.warmup_steps,
@@ -99,7 +138,9 @@ def main(args):
 
     else:
         opt = torch.optim.SGD(
-            group_specs, lr=args.lr, momentum=0.9, weight_decay=args.weight_decay
+            group_specs, #lr=args.lr, 
+            momentum=0.9, 
+            weight_decay=args.weight_decay
         )
     print(f"\nOptimizer:\n{opt}")
 

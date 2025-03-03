@@ -218,4 +218,6 @@ def parse_args(base_parser, args, namespace):
     # the base model width that mup has been configured on
     parser.add_argument("--scale-base-model", default=256, type=int)
     parser.add_argument("--scale-depth", default=1.4, type=float)
+    parser.add_argument("--expert_lr", default=2e-3, type=float)
+    
     return parser.parse_args(args, namespace)
