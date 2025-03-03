@@ -67,7 +67,7 @@ def main(args):
     param_name_mapping = {p_name: p for p_name, p in model.named_parameters()}
     optimized_params_cnt = 0
 
-    if False and args.moe:
+    if args.moe:
         # MoE with diff lr for non-experts and experts
         expert_param_names = [
             n for n, p in model.named_parameters() if ".mlp.experts." in n
@@ -97,9 +97,6 @@ def main(args):
                 "weight_decay": 0.0,
             }
         ]
-    else:
-        for spec in group_specs:
-            spec["lr"] = args.lr # add lr for group specs since we dont give lr in optimizer explicitly
     
     for g in group_specs:
         params = []
@@ -123,14 +120,14 @@ def main(args):
     if args.opt == "adamw":
         opt = torch.optim.AdamW(
             group_specs,
-            #lr=args.lr,
+            lr=args.lr, #global lr
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
         )
     elif args.opt == "SFAdamW":
         opt = schedulefree.AdamWScheduleFree(
             group_specs, 
-            #lr=args.lr,
+            lr=args.lr, #global lr
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
             warmup_steps=args.warmup_steps,
@@ -138,7 +135,8 @@ def main(args):
 
     else:
         opt = torch.optim.SGD(
-            group_specs, #lr=args.lr, 
+            group_specs, 
+            lr=args.lr,  #global lr
             momentum=0.9, 
             weight_decay=args.weight_decay
         )
