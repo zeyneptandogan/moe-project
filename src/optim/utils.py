@@ -155,7 +155,7 @@ def eval(
         val_loss = outputs["loss"]
 
         loss_list_val.append(val_loss)
-        acc_list.append((outputs["logits"].argmax(-1) == y).float().mean())
+        acc_list.append((outputs["logits"].argmax(-1) == y).float().mean())   #get highest logit and compare with the target 
 
         # auxiliary losses are optional
         for k, v in outputs["aux_losses"].items():

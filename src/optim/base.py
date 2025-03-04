@@ -3,6 +3,7 @@ import copy
 from pathlib import Path
 import time
 import yaml
+from tqdm import tqdm
 
 import torch
 import wandb
@@ -54,7 +55,7 @@ def train(
 
     if cfg.resume_from:
         # This is a full resume including the model weights, optimizer, state
-        # dataloader state, random seed, etc. Not indended for fine tuning or
+        # dataloader state, random seed, etc. Not intended for fine-tuning or
         # other scenarios where some of these should change.
         print(f"\nResuming Training From {cfg.resume_from}")
         ckpt_dir = Path(cfg.resume_from)
@@ -71,7 +72,7 @@ def train(
 
     if cfg.weight_average:
         # This does generally not support resuming training, but will work if
-        # cfg.wa_interval perfectly divides the iteration number of the chkpt.
+        # cfg.wa_interval perfectly divides the iteration number of the checkpoint.
         # Otherwise, the first avg will not be correctly computed, with a bias
         # towards the first sample and missing values for earlier iterations.
         weight_averager = WeightAverager(
@@ -114,6 +115,16 @@ def train(
     stats = {"train_loss": [], "val_loss": [], "val_pp": [], "val_acc": []}
     model.train()
 
+    # Initialize tqdm progress bar
+    progress_bar = tqdm(
+        total=cfg.iterations,
+        initial=curr_iter,
+        desc="Training",
+        position=0,
+        leave=True,
+        dynamic_ncols=True
+    )
+
     while curr_iter <= cfg.iterations:
         # Save permanent checkpoint
         if cfg.permanent_ckpt_interval > 0:
@@ -132,7 +143,7 @@ def train(
                 save_worker_state(ckpt_dir)
 
         ws = distributed_backend.get_world_size()
-        tokens = ws * substep * cfg.sequence_length * cfg.batch_size
+        tokens = ws * substep * cfg.sequence_length * cfg.batch_size # number of tokens processed so far
         epoch = tokens / train_reader.num_tokens
         if (
             curr_iter % cfg.eval_interval == 0
@@ -187,7 +198,7 @@ def train(
                     microstep_idx=microstep_idx,
                     gradient_accumulation_steps=cfg.acc_steps,
                 ):
-                    outputs = model(x, targets=y, moe=cfg.moe)  # newly added for moe
+                    outputs = model(x, targets=y, moe=cfg.moe) # newly added for moe
 
             loss = outputs["loss"] / cfg.acc_steps
             loss.backward()
@@ -214,6 +225,7 @@ def train(
         dt = (time.perf_counter_ns() - t_start) / 1e9
 
         curr_iter += 1
+        progress_bar.update(1)  # Update tqdm progress bar
 
         if (
             cfg.log_interval
@@ -245,8 +257,8 @@ def train(
                     }
                 )
 
+    progress_bar.close()  # Close tqdm when training is done
     return stats
-
 
 def eval_and_log(
     curr_iter,
