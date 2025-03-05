@@ -16,6 +16,9 @@ from models.utils import get_model
 from optim.base import train
 from optim.utils import cos_inf_schedule, wsd_schedule
 
+# Suppress warnings from torch.distributed
+#import torch._dynamo
+#torch._dynamo.config.suppress_errors = True
 
 def main(args):
     distributed_backend = distributed.make_backend_from_args(args)
@@ -68,43 +71,42 @@ def main(args):
     optimized_params_cnt = 0
 
     if args.moe:
-        # MoE with diff lr for non-experts and experts
-        expert_param_names = [
-            n for n, p in model.named_parameters() if ".mlp.experts." in n
-        ]
-        non_expert_param_names = [
-            n for n, p in model.named_parameters()
-            if ".mlp.experts." not in n and "ln" not in n and "wte" not in n
-        ]
-        layernorm_param_names = [
-            n for n, p in model.named_parameters() if "ln" in n or "wte" in n
-        ]
-
-        group_specs = [
-            {
-                "params": expert_param_names,
+        updated_group_specs = []
+        for spec in group_specs:
+            mlp_found = False
+            # Initialize once per spec so values can be accumulated
+            mlp_param = {
+                "params": [],
                 "lr": args.expert_lr,
-                "weight_decay": args.weight_decay,
-            },
-            {
-                "params": non_expert_param_names,
-                "lr": args.lr,
-                "weight_decay": args.weight_decay,
-            },
-            {
-                "params": layernorm_param_names,
-                "lr": args.lr,
-                "weight_decay": 0.0,
             }
-        ]
-    
+            other_param = {
+                "params": [],
+                "lr": args.lr,
+            }
+            for param in spec.get('params', []):
+                if '.mlp.experts.' in param or '.mlp.router.' in param:
+                    mlp_param["params"].append(param)
+                    mlp_found = True
+                else:
+                    other_param["params"].append(param)
+            if mlp_found:
+                updated_group_specs.append(mlp_param)
+                updated_group_specs.append(other_param)
+                print("other params:", other_param)
+            else:
+                updated_group_specs.append(spec)
+        group_specs = updated_group_specs
+
     for g in group_specs:
         params = []
         for p_name in g["params"]:
-            translated_p_names = (
-                distributed_backend.translate_model_parameter_name_for_node(p_name)
-            )
-            params += [param_name_mapping[p_name] for p_name in translated_p_names]
+            translated_p_names = distributed_backend.translate_model_parameter_name_for_node(p_name)
+            #print("Original name:", p_name, "translated to:", translated_p_names)  # Debug print
+            for tp in translated_p_names:
+                if tp not in param_name_mapping:
+                    print("Missing key in param_name_mapping:", tp)  # Debug print for missing key
+                else:
+                    params.append(param_name_mapping[tp])
         g["params"] = params
         optimized_params_cnt += sum([p.numel() for p in g["params"]])
     params_cnt = distributed_backend.get_raw_model(model).get_num_params()
