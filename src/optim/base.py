@@ -206,12 +206,30 @@ def train(
 
         # norms logging per layer
         if cfg.wandb:
+            log_dict = {}
+            total_param_norm_sq = 0.0
+            total_grad_norm_sq = 0.0
+
             for name, param in model.named_parameters():
+                # Compute the L2 norm for the parameter
+                param_norm = param.norm(2).item()
+                total_param_norm_sq += param_norm ** 2
+                log_dict[f"Param Norm/{name}"] = param_norm
+
+                # Compute the gradient norm if the gradient exists
                 if param.grad is not None:
-                    grad_norm = param.grad.norm(2).item() # grad norm
-                    wandb.log({f"Grad Norm/{name}": grad_norm})
-                param_norm = param.norm(2).item()  # parameter norm
-                wandb.log({f"Param Norm/{name}": param_norm})
+                    grad_norm = param.grad.norm(2).item()
+                    total_grad_norm_sq += grad_norm ** 2
+                    log_dict[f"Grad Norm/{name}"] = grad_norm
+
+            # Calculate overall norms and log them
+            overall_param_norm = total_param_norm_sq ** 0.5
+            overall_grad_norm = total_grad_norm_sq ** 0.5
+
+            log_dict["Overall Param Norm"] = overall_param_norm
+            log_dict["Overall Grad Norm"] = overall_grad_norm
+
+            wandb.log(log_dict)
 
         if cfg.grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -237,27 +255,39 @@ def train(
                 f"train/{k}": v for k, v in outputs["aux_losses"].items()
             }
 
-            current_lrs = [param_group["lr"] for param_group in opt.param_groups]
+            global_lr = None
+            expert_lr = None
+
+            for param_group in opt.param_groups:
+                if param_group.get("group") == "expert":
+                    expert_lr = param_group["lr"]
+                elif param_group.get("group") == "global":
+                    global_lr = param_group["lr"]
+
+            # If no expert group is found, you might set expert_lr to global_lr or skip logging it.
+            if expert_lr is None:
+                expert_lr = global_lr
 
             print(
                 f"Train: Iter={curr_iter} ({epoch:0.3f} epochs) "
                 f"train_loss={train_loss:.3f} iter_dt={dt:.2e}s "
-                f"lr={current_lrs[0]:.2e}"
+                f"global_lr={global_lr:.2e} expert_lr={expert_lr:.2e}"
             )
 
             if cfg.wandb:
-                wandb.log(
-                    {
-                        "iter": curr_iter,
-                        "train/loss": train_loss,
-                        "train/perplexity": 2.71828**train_loss,
-                        "lr": current_lrs[0],
-                        "iter_dt": dt,
-                        **train_aux_losses,
-                    }
-                )
+                metrics = {
+                    "iter": curr_iter,
+                    "train/loss": train_loss,
+                    "train/perplexity": 2.71828 ** train_loss,
+                    "global_lr": global_lr,
+                    "iter_dt": dt,
+                    **train_aux_losses,
+                }
+                if expert_lr is not None:
+                    metrics["expert_lr"] = expert_lr # added for moe
+                wandb.log(metrics)
 
-    progress_bar.close()  # Close tqdm when training is done
+    progress_bar.close() 
     return stats
 
 def eval_and_log(

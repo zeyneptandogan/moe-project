@@ -78,10 +78,12 @@ def main(args):
             mlp_param = {
                 "params": [],
                 "lr": args.expert_lr,
+                "group": "expert",
             }
             other_param = {
                 "params": [],
                 "lr": args.lr,
+                "group": "global",  #non-expert
             }
             for param in spec.get('params', []):
                 if '.mlp.experts.' in param or '.mlp.router.' in param:
@@ -92,7 +94,7 @@ def main(args):
             if mlp_found:
                 updated_group_specs.append(mlp_param)
                 updated_group_specs.append(other_param)
-                print("other params:", other_param)
+                #print("other params:", other_param)
             else:
                 updated_group_specs.append(spec)
         group_specs = updated_group_specs
@@ -237,15 +239,27 @@ def get_exp_name(args, distributed_backend):
     model_prefix = "moe_" if args.moe else ""  #newly added for moe
 
     rank = distributed_backend.rank
+    parts = [
+    args.dataset,
+        f"{model_prefix}{args.model}",
+        f"nlayers{args.n_layer}",
+        f"nhead{args.n_head}",
+    ]
+    
+    if args.moe:
+        parts.append(f"expert_lr{args.expert_lr}") #moe lr in the project name
 
-    exp_name = (
-        f"{args.dataset}_{model_prefix}{args.model}_nlayers{args.n_layer}"
-        f"_nhead{args.n_head}_lr{args.lr}"
-        f"_sched_{args.scheduler}_warmup{args.warmup_steps}"
-        f"_decay_{args.decay_type}_{args.wsd_fract_decay}"
-        f"_iter{args.iterations}"
-        f"_bs{args.batch_size}x{args.acc_steps}_ws{args.world_size}"
-    )
+    parts.extend([
+        f"lr{args.lr}",
+        f"sched_{args.scheduler}",
+        f"warmup{args.warmup_steps}",
+        f"decay_{args.decay_type}_{args.wsd_fract_decay}",
+        f"iter{args.iterations}",
+        f"bs{args.batch_size}x{args.acc_steps}",
+        f"ws{args.world_size}",
+    ])
+
+    exp_name = "_".join(parts)
    
     if args.wandb_run_prefix != "none":
         exp_name = args.wandb_run_prefix + "_" + exp_name
