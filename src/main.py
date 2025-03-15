@@ -40,13 +40,46 @@ def main(args):
 
     exp_name = get_exp_name(args, distributed_backend)
     exp_dir = Path(args.results_base_folder) / exp_name
+
+    if (exp_dir / "ckpts" / "latest" / "main.pt").exists():
+        if not args.auto_resume:
+            raise ValueError(
+                f"The experiment dir {exp_dir} already exists. "
+                + "To resume training, set auto_resume=True. "
+                + "Otherwise, specify a different experiment name. "
+            )
+        else:
+            # Auto resume overwrites resume_from
+            args.resume_from = str(exp_dir / "ckpts" / "latest")
+
+    elif distributed_backend.is_master_process():
+        exp_dir.mkdir(parents=True, exist_ok=True)
+
+    wandb_run_id = None
     if distributed_backend.is_master_process() and args.wandb:
-        wandb.init(
-            project=args.wandb_project,
-            name=exp_name,
-            config=vars(args),
-            entity="Moe-tmp",  # Organization name
-        )
+        if args.resume_from:
+            wandb_run_id_file = Path(args.resume_from) / "wandb_id.txt" # instead of storing in the checkpoint folder, store in a txt so that we wont reload the checkpoint twice.
+            if wandb_run_id_file.exists():
+                with open(wandb_run_id_file, "r") as f:
+                    wandb_run_id = f.read().strip()
+
+        if wandb_run_id:
+            wandb.init(
+                project=args.wandb_project,
+                name=exp_name,
+                config=vars(args),
+                entity="Moe-tmp",  
+                id=wandb_run_id,
+                resume="must"  
+            )
+        else:
+            wandb.init(
+                project=args.wandb_project,
+                name=exp_name,
+                config=vars(args),
+                entity="Moe-tmp",
+            )
+        #print(wandb.run.id)
         wandb.define_metric("iter")
         wandb.define_metric("train/*", step_metric="iter")
         wandb.define_metric("val/*", step_metric="iter")
@@ -148,11 +181,20 @@ def main(args):
 
     if args.scheduler != "none":
         assert args.warmup_steps < args.iterations, "Warmup steps must be < iterations."
+
+        div_factor = 1e2
+        if hasattr(args, "min_lr") and args.min_lr is not None:
+            final_div_factor = (args.lr / div_factor) / args.min_lr # to be used for scheduler cos, linear and cos_inf
+        else:
+            # Otherwise, use a default value (e.g. 0.1)
+            final_div_factor = 0.1
+
         if args.scheduler in ["cos", "linear"]:
             # initial lr is args.lr / div_factor
             # final lr is initial_lr/final_div_factor = args.lr / div_factor / final_div_factor
             # TODO: use this argument
             # final_div_factor = args.lr / 1e2 / args.cos_final_lr
+            # to have final lr = min lr -> we should set final_div_factor = args.lr / div_factor / min_lr
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 optimizer=opt,
                 max_lr=[group.get("lr", args.lr) for group in group_specs],
@@ -160,19 +202,22 @@ def main(args):
                 pct_start=args.warmup_steps / args.iterations,
                 anneal_strategy=args.scheduler,
                 cycle_momentum=False,
-                div_factor=1e2,
-                final_div_factor=0.1,
+                div_factor=div_factor,
+                final_div_factor=final_div_factor,
             )
         elif args.scheduler == "cos_inf":
             lambda_schedule = cos_inf_schedule(
                 n_iterations=args.iterations,
                 n_warmup=args.warmup_steps,
                 n_inf=args.cos_inf_steps,
-                div_factor=1e2,
-                final_div_factor=0.1,
+                div_factor=div_factor,
+                final_div_factor=final_div_factor,
             )
             scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda_schedule)
         elif args.scheduler == "wsd":
+            # TODO ASK - how to set min lr for wsd? why was it a param in the original code?
+            # args.lr*final_lr_factor = min_lr
+            # final_lr_factor = min_lr/args.lr ?
             lambda_schedule = wsd_schedule(
                 n_iterations=args.iterations,
                 n_warmup=args.warmup_steps,
@@ -187,19 +232,6 @@ def main(args):
     else:
         scheduler = None
 
-    if (exp_dir / "ckpts" / "latest" / "main.pt").exists():
-        if not args.auto_resume:
-            raise ValueError(
-                f"The experiment dir {exp_dir} already exists. "
-                + "To resume training, set auto_resume=True. "
-                + "Otherwise, specify a different experiment name. "
-            )
-        else:
-            # Auto resume overwrites resume_from
-            args.resume_from = str(exp_dir / "ckpts" / "latest")
-
-    elif distributed_backend.is_master_process():
-        exp_dir.mkdir(parents=True, exist_ok=True)
 
     stats = train(
         model=model,

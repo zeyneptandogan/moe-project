@@ -282,7 +282,7 @@ def eval_sweep_alphath(
     return x_axis, y_axis_acc, y_axis_pp, y_axis_loss
 
 
-def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path):
+def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path, wandb_run: None):
     if isinstance(model, torch.nn.parallel.DistributedDataParallel):
         model = model.module
 
@@ -294,6 +294,13 @@ def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path):
     }
     ckpt_dir.mkdir(exist_ok=True, parents=True)
     torch.save(checkpoint, ckpt_dir / "main.pt")
+
+    if wandb_run is not None:
+        # Save the wandb run ID so that we can resume the same run if needed
+        wandb_run_id_file = ckpt_dir / "wandb_id.txt"
+        wandb_run_id_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(wandb_run_id_file, "w") as f:
+            f.write(wandb.run.id)
 
 
 def load_checkpoint(model, opt, scheduler, ckpt_path, device):
