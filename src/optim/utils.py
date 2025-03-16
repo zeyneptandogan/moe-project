@@ -147,7 +147,7 @@ def eval(
     loss_list_val, acc_list, loss_list_aux_val = [], [], {}
 
     router_logits = []
-
+    selected_experts_global_list = []
     for idx in range(max_num_batches):
         x, y = get_batch(reader, device=device)
         with ctx:
@@ -169,12 +169,34 @@ def eval(
             # shape [max_batches, layers, batch_size * sequence_length, num_experts]
             router_logits.append(logits)
 
+        if moe and "selected_experts" in outputs:
+            # outputs["selected_experts"] is a list (one per MoE layer)
+            if not selected_experts_global_list:
+                # Create a list for each layer.
+                selected_experts_global_list = [[] for _ in outputs["selected_experts"]]
+            for i, se in enumerate(outputs["selected_experts"]):
+                selected_experts_global_list[i].append(se)
+
     val_acc = torch.stack(acc_list).mean().item()
     val_loss = torch.stack(loss_list_val).mean().item()
     val_perplexity = 2.71828**val_loss
     val_aux_losses = {
         f"val/{k}": torch.stack(v).mean().item() for k, v in loss_list_aux_val.items()
     }
+
+    # Compute global maxvio if we collected selections.
+    avg_maxvio_global = None
+    per_layer_maxvio_global = {}
+    if moe and selected_experts_global_list:
+        num_non_shared_experts = cfg.moe_num_experts - cfg.moe_num_shared_experts if cfg else 1
+        maxvio_global_list = []
+        for layer_idx, se_list in enumerate(selected_experts_global_list):
+            concat_tensor = torch.cat(se_list, dim=0)  # Concatenate along token dimension.
+            maxvio = compute_maxvio(concat_tensor, num_non_shared_experts)
+            maxvio_global_list.append(maxvio)
+            per_layer_maxvio_global[f"val/maxvioglobal_layer_{layer_idx}"] = maxvio.item()
+        avg_maxvio_global = sum(maxvio_global_list) / len(maxvio_global_list)
+
 
     if get_router_logits:
         # filter out the router logits that are not of the expected shape (happens for the last batch in
@@ -193,7 +215,7 @@ def eval(
             .cpu()
         )
 
-    return val_acc, val_loss, val_perplexity, val_aux_losses, router_logits
+    return val_acc, val_loss, val_perplexity, val_aux_losses, router_logits, avg_maxvio_global, per_layer_maxvio_global
 
 
 @torch.no_grad()
@@ -369,3 +391,33 @@ def visualize_routing(router_logits, extra_args):
         }
         logs.update(layer_token_routing)
     return logs
+
+
+def compute_maxvio(selected_experts: torch.Tensor, num_experts: int) -> torch.Tensor:
+    """
+    Compute the MaxVio metric for a batch.
+
+    Args:
+        selected_experts (Tensor): Tensor of shape [num_tokens, top_k] containing
+                                   the indices of the selected experts per token.
+        num_experts (int): The number of experts (e.g., non-shared experts).
+
+    Returns:
+        Tensor: The maximal violation (MaxVio) for the current batch.
+    """
+    # Flatten selected experts (if top_k > 1)
+    selected = selected_experts.view(-1)
+    #print("Flattened selected experts:", selected)
+    
+    # Count tokens assigned to each expert.
+    load_counts = torch.bincount(selected, minlength=num_experts).float()
+    #print("Load counts per expert:", load_counts)
+    
+    total_tokens = selected.numel() # Total number of tokens processed.
+    
+    expected_load = total_tokens / num_experts     # Expected load under perfect balance.
+    #print("Expected load per expert:", expected_load)
+    
+    max_load = load_counts.max()    
+    maxvio = (max_load - expected_load) / expected_load    
+    return maxvio

@@ -276,9 +276,14 @@ class Llama(GPTBase):
             torch.stack(router_logits, dim=0) if len(router_logits) > 0 else None
         )
 
-        return {
+        ret = {
             "logits": logits,
             "loss": loss,
             "aux_losses": aux_losses,
             "router_logits": router_logits,
         }
+       
+        if moe:
+            ret["selected_experts"] = experts # Return selected experts only when MoE is enabled for maxvio calculation
+
+        return ret

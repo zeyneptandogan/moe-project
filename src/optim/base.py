@@ -23,6 +23,7 @@ from .utils import (
     save_checkpoint,
     save_worker_state,
     visualize_routing,
+    compute_maxvio
 )
 
 
@@ -200,10 +201,31 @@ def train(
                     gradient_accumulation_steps=cfg.acc_steps,
                 ):
                     outputs = model(x, targets=y, moe=cfg.moe) # newly added for moe
+    
 
             loss = outputs["loss"] / cfg.acc_steps
             loss.backward()
             substep += 1
+
+            if cfg.moe and "selected_experts" in outputs:
+                selected_experts_list = outputs["selected_experts"]
+                num_non_shared_experts = cfg.moe_num_experts - cfg.moe_num_shared_experts
+                maxvio_list = []
+                for idx, selected_experts in enumerate(selected_experts_list):
+                    #print(f"Layer {idx}: selected_experts shape: {selected_experts.shape}")
+                    maxvio = compute_maxvio(selected_experts, num_non_shared_experts)
+                    maxvio_list.append(maxvio)
+                    #print(f"Layer {idx}: MaxViobatch = {maxvio.item():.4f}")
+                
+                avg_maxvio = sum(maxvio_list) / len(maxvio_list)
+                #print(f"Microstep {microstep_idx}: Loss = {loss.item():.4f}, Average MaxViobatch = {avg_maxvio.item():.4f}\n")
+                if cfg.wandb:
+                    if distributed_backend.is_master_process():
+                        wandb.log({
+                            "train/maxviobatch": avg_maxvio.item(),
+                            **{f"train/maxviobatch_layer_{i}": mv.item() for i, mv in enumerate(maxvio_list)}
+                        })
+        
 
         # norms logging per layer
         if cfg.wandb:
@@ -229,8 +251,8 @@ def train(
 
             log_dict["Overall Param Norm"] = overall_param_norm
             log_dict["Overall Grad Norm"] = overall_grad_norm
-
-            wandb.log(log_dict)
+            if distributed_backend.is_master_process():
+                wandb.log(log_dict)
 
         if cfg.grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -315,13 +337,13 @@ def eval_and_log(
     # to make sure we start from the beginning of the validation set,
     # i.e. repeat the same batches
     val_reader.set_step(0)
-    val_acc, val_loss, val_perplexity, val_aux_losses, router_logits = eval(
+    val_acc, val_loss, val_perplexity, val_aux_losses, router_logits, avg_maxvio_global, per_layer_maxvio_global = eval(
         model,
         val_reader,
         cfg.device,
         max_num_batches=max_num_batches,
         ctx=type_ctx,
-        moe=cfg.moe, #moe added
+        moe=cfg.moe,
         get_router_logits=cfg.moe and cfg.plot_router_logits,
         cfg=cfg,
     )
@@ -350,6 +372,10 @@ def eval_and_log(
                 "val/acc": val_acc,
                 **val_aux_losses,
             }
+        if avg_maxvio_global is not None:
+            logs["val/maxvioglobal"] = avg_maxvio_global.item()
+            # Log per-layer global maxvio.
+            logs.update(per_layer_maxvio_global)
         if cfg.moe and cfg.plot_router_logits:
             routing_logs = visualize_routing(router_logits, cfg)
             logs = {**logs, **routing_logs}  #added for moe logging
@@ -370,3 +396,4 @@ def eval_and_log(
             # why a copy? see github.com/wandb/wandb/issues/2981
             wandb.log({f"generated-text-{wandb.run.name}": copy.copy(text_table)})
     model.train()
+
