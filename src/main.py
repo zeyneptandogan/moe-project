@@ -27,7 +27,6 @@ def main(args):
 
     if args.full_eval_at is None:
         args.full_eval_at = []
-
     # NOTE args.seed is offset per worker in get_adjusted_args_for_process
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -70,7 +69,7 @@ def main(args):
                 config=vars(args),
                 entity="Moe-tmp",  
                 id=wandb_run_id,
-                resume="must"  
+                resume="allow"  
             )
         else:
             wandb.init(
@@ -215,9 +214,6 @@ def main(args):
             )
             scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda_schedule)
         elif args.scheduler == "wsd":
-            # TODO ASK - how to set min lr for wsd? why was it a param in the original code?
-            # args.lr*final_lr_factor = min_lr
-            # final_lr_factor = min_lr/args.lr ?
             lambda_schedule = wsd_schedule(
                 n_iterations=args.iterations,
                 n_warmup=args.warmup_steps,
@@ -280,6 +276,7 @@ def get_exp_name(args, distributed_backend):
     
     if args.moe:
         parts.append(f"expert_lr{args.expert_lr}") #moe lr in the project name
+        parts.append(f"aux{args.moe_aux_loss_factor}")
 
     parts.extend([
         f"lr{args.lr}",
