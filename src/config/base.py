@@ -54,6 +54,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--iterations", default=15000, type=int)
     parser.add_argument("--warmup-steps", default=300, type=int)
     parser.add_argument("--lr", default=2e-3, type=float)
+    parser.add_argument("--min-lr", type=float) # for cosine schedule
     # wsd
     parser.add_argument("--wsd-final-lr-scale", default=0.0, type=float)
     parser.add_argument("--wsd-fract-decay", default=0.1, type=float)
@@ -219,5 +220,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--scale-base-model", default=256, type=int)
     parser.add_argument("--scale-depth", default=1.4, type=float)
     parser.add_argument("--expert_lr", default=2e-3, type=float)
+    # loss free aux method
+    parser.add_argument("--aux-loss-free", action="store_true")
+    parser.add_argument("--bias-update-rate", default=1e-3, type=float)
     
     return parser.parse_args(args, namespace)

@@ -249,7 +249,9 @@ class Llama(GPTBase):
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
             )
-            if moe and self.config.moe_routing == "standard_gating":
+                
+            # dont need aux losses when aux_loss_free is enabled
+            if moe and self.config.moe_routing == "standard_gating" and not self.config.aux_loss_free: 
                 # calculate the router losses per layer
                 for logit, expert_choice in zip(router_logits, experts):
                     router_losses = self.get_router_losses(

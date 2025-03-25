@@ -317,7 +317,7 @@ def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path, wandb_run: None)
     ckpt_dir.mkdir(exist_ok=True, parents=True)
     torch.save(checkpoint, ckpt_dir / "main.pt")
 
-    if wandb_run is not None:
+    if wandb_run is not None and wandb_run:
         # Save the wandb run ID so that we can resume the same run if needed
         wandb_run_id_file = ckpt_dir / "wandb_id.txt"
         wandb_run_id_file.parent.mkdir(parents=True, exist_ok=True)
@@ -407,17 +407,14 @@ def compute_maxvio(selected_experts: torch.Tensor, num_experts: int) -> torch.Te
     """
     # Flatten selected experts (if top_k > 1)
     selected = selected_experts.view(-1)
-    #print("Flattened selected experts:", selected)
-    
-    # Count tokens assigned to each expert.
-    load_counts = torch.bincount(selected, minlength=num_experts).float()
+
+    load_counts = torch.bincount(selected, minlength=num_experts).float() # Count tokens assigned to each expert.
     #print("Load counts per expert:", load_counts)
     
     total_tokens = selected.numel() # Total number of tokens processed.
     
     expected_load = total_tokens / num_experts     # Expected load under perfect balance.
-    #print("Expected load per expert:", expected_load)
-    
+        
     max_load = load_counts.max()    
     maxvio = (max_load - expected_load) / expected_load    
     return maxvio

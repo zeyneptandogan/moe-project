@@ -6,6 +6,7 @@ import yaml
 from tqdm import tqdm
 
 import torch
+import torch.nn.functional as F
 import wandb
 
 from logger.logger import DynamicsLogger
@@ -202,8 +203,8 @@ def train(
                 ):
                     outputs = model(x, targets=y, moe=cfg.moe) # newly added for moe
     
-
-            loss = outputs["loss"] / cfg.acc_steps
+            # if the aux loss free is enabled, the loss only will be cross entropy. Done inside of the model file.
+            loss = outputs["loss"] / cfg.acc_steps 
             loss.backward()
             substep += 1
 
@@ -225,6 +226,38 @@ def train(
                             "train/maxviobatch": avg_maxvio.item(),
                             **{f"train/maxviobatch_layer_{i}": mv.item() for i, mv in enumerate(maxvio_list)}
                         })
+
+                if cfg.aux_loss_free:
+                    for layer_idx, selected_experts in enumerate(selected_experts_list):
+                        # print(f"[Layer {layer_idx}] selected_experts shape: {selected_experts.shape}")
+                        one_hot = F.one_hot(selected_experts, num_classes=cfg.moe_num_experts)
+                        token_assignment = one_hot.max(dim=1)[0]  # shape: [num_tokens, num_experts]
+                        # print(f"[Layer {layer_idx}] token_assignment shape: {token_assignment.shape}")
+
+                        # Count tokens assigned to each expert: c_i
+                        c_i = token_assignment.sum(dim=0).float()  # shape: [num_experts]
+                        # print(f"[Layer {layer_idx}] c_i (token counts per expert): {c_i}")
+
+                        # Compute average count: \bar{c} - the amount we should have when uniformly distributed.
+                        c_bar = c_i.mean()
+                        # print(f"[Layer {layer_idx}] c_bar (average token count): {c_bar}")
+
+                        # Compute load violation error: e_i = c_bar - c_i.
+                        e_i = c_bar - c_i # if that is + then we need to increase the bias to balance the load in next iter.
+                        # print(f"[Layer {layer_idx}] e_i (load violation error): {e_i}")
+
+                        # Compute bias update: u * sign(e_i)
+                        bias_update = cfg.bias_update_rate * torch.sign(e_i)
+                        # print(f"[Layer {layer_idx}] bias_update: {bias_update}")
+
+                        # Update the expert biases.
+                        # Ensure that the MoE block has the attribute 'expert_biases'
+
+                        # module is added since we use DistributedDataParallel.
+                        model.module.transformer.h[layer_idx].mlp.expert_biases+= bias_update 
+                        updated_biases = model.module.transformer.h[layer_idx].mlp.expert_biases
+                        # print(f"[Layer {layer_idx}] Updated expert_biases: {updated_biases}")
+
         
 
         # norms logging per layer

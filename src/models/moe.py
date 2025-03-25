@@ -139,13 +139,19 @@ class MoE(nn.Module):
             config.n_embd, config.moe_num_experts - self.n_shared_experts, bias=False
         )
         self.top_k = config.moe_num_experts_per_tok
-        self.softmax_order = config.moe_softmax_order
+        self.softmax_order = config.moe_softmax_order 
+        # with register buffer, it will be excluded from gradient updates
+        if config.aux_loss_free:
+            self.register_buffer("expert_biases", torch.zeros(config.moe_num_experts)) # for now we included all experts including the shared ones
 
     def forward(self, inputs: torch.Tensor):
         # [batch_size * sequence_length, n_embd]
         inputs_squashed = inputs.view(-1, inputs.shape[-1])
         # [batch_size * sequence_length, num_experts]
         router_logits = self.router(inputs_squashed)
+
+        if hasattr(self, "expert_biases"): # aux_loss_free
+            router_logits += self.expert_biases
 
         # note that selected experts will be the same for all orders:
         # softmax doesnt change top-k, but the weights are different
