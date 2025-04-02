@@ -150,17 +150,21 @@ class MoE(nn.Module):
         # [batch_size * sequence_length, num_experts]
         router_logits = self.router(inputs_squashed)
 
-        if hasattr(self, "expert_biases"): # aux_loss_free
-            router_logits += self.expert_biases
+        orig_router_logits = router_logits.clone()
+        if hasattr(self, "expert_biases"):  # aux_loss_free
+            biased_logits = router_logits + self.expert_biases
+        else:
+            biased_logits = router_logits
 
         # note that selected experts will be the same for all orders:
         # softmax doesnt change top-k, but the weights are different
         if self.softmax_order == "softmax_topk":
-            all_probs = F.softmax(router_logits, dim=1, dtype=torch.float32)
+            all_probs = F.softmax(biased_logits, dim=1, dtype=torch.float32)
             weights, selected_experts = torch.topk(all_probs, self.top_k)
         elif self.softmax_order == "topk_softmax":
-            weights, selected_experts = torch.topk(router_logits, self.top_k)
-            weights = F.softmax(weights, dim=-1, dtype=torch.float32)
+            weights, selected_experts = torch.topk(biased_logits, self.top_k)
+            #use original router logits for weighting 
+            weights = F.softmax(orig_router_logits.gather(1, selected_experts), dim=-1, dtype=torch.float32)
         else:
             raise ValueError(f"Unknown softmax_order: {self.softmax_order}")
 
