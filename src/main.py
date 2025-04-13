@@ -4,6 +4,7 @@ from pathlib import Path
 import random
 import os 
 import schedulefree
+from distributed.shampoo import Shampoo
 
 import numpy as np
 import torch
@@ -167,6 +168,16 @@ def main(args):
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
             warmup_steps=args.warmup_steps,
+        )
+    elif args.opt == "Shampoo":
+        # Shampoo optimizer - It requires the learning rate, momentum, weight_decay, epsilon and update frequency.
+        opt = Shampoo(
+            group_specs,
+            lr=args.lr,
+            momentum=getattr(args, "shampoo_momentum", 0.0),
+            weight_decay=args.weight_decay,
+            epsilon=getattr(args, "shampoo_epsilon", 1e-4),
+            update_freq=getattr(args, "shampoo_update_freq", 25),
         )
 
     else:
