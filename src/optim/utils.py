@@ -308,9 +308,17 @@ def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path, wandb_run: None)
     if isinstance(model, torch.nn.parallel.DistributedDataParallel):
         model = model.module
 
+    # Use the correct optimizer state dict method
+    if hasattr(opt, "distributed_state_dict"):
+        optimizer_state = opt.distributed_state_dict(
+            key_to_param=model.named_parameters()
+        )
+    else:
+        optimizer_state = opt.state_dict()
+
     checkpoint = {
         "model": model.state_dict(),
-        "optimizer": opt.state_dict(),
+        "optimizer": optimizer_state,
         "scheduler": scheduler.state_dict(),
         "itr": itr,
     }
@@ -330,12 +338,21 @@ def load_checkpoint(model, opt, scheduler, ckpt_path, device):
         model = model.module
 
     ckpt = torch.load(ckpt_path, map_location=device)
+
     model.load_state_dict(ckpt["model"])
-    opt.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
     itr = ckpt["itr"]
-    return itr
 
+    # Use the special loader if it's DistributedShampoo
+    if hasattr(opt, "load_distributed_state_dict"):
+        opt.load_distributed_state_dict(
+            state_dict=ckpt["optimizer"],
+            key_to_param=model.named_parameters()
+        )
+    else:
+        opt.load_state_dict(ckpt["optimizer"])
+
+    return itr
 
 def save_worker_state(ckpt_dir: Path):
     # Dataloader, rng states

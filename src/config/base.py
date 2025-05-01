@@ -224,4 +224,9 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--aux-loss-free", action="store_true")
     parser.add_argument("--bias-update-rate", default=1e-3, type=float)
     
+    #for shampoo optimizer
+    parser.add_argument("--eps",          type=float, default=1e-8,
+                    help="Shampoo numerical‑stability epsilon")
+    parser.add_argument("--shampoo_decay",type=float, default=0.9,
+                        help="EMA decay rate for Shampoo covariances")
     return parser.parse_args(args, namespace)

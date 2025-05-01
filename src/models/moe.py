@@ -169,6 +169,38 @@ class MoE(nn.Module):
             raise ValueError(f"Unknown softmax_order: {self.softmax_order}")
 
         results = torch.zeros_like(inputs_squashed)
+        
+        for i in range(self.n_shared_experts):
+            expert_out, _ = self.experts[i](inputs_squashed)
+            results += expert_out
+        unique_experts = torch.unique(selected_experts)
+        for expert_id in unique_experts:
+            # Create a mask over tokens (rows) and top_k columns.
+            mask = selected_experts == expert_id  # [N, top_k] Boolean
+            if mask.sum() == 0:
+                continue  # No tokens routed to this expert.
+            # Get indices where this expert is selected.
+            # `indices` is of shape [num_tokens_for_expert, 2], where:
+            #   column 0: row index (token position)
+            #   column 1: top_k slot where expert_id was chosen.
+            indices = torch.nonzero(mask, as_tuple=False)
+            token_idx = indices[:, 0]  # positions in flattened input
+            topk_slot = indices[:, 1]  # corresponding topk index for weight
+            # Gather inputs to be processed.
+            dispatched_inputs = inputs_squashed[token_idx]
+            # Actual expert index in self.experts:
+            # (Non-shared experts are stored after the shared ones)
+            actual_expert_idx = int(expert_id.item()) + self.n_shared_experts
+            expert_module = self.experts[actual_expert_idx]
+            # Process the tokens in batch.
+            expert_output, _ = expert_module(dispatched_inputs)
+            # Multiply the expert output by corresponding routing weight.
+            dispatched_weights = weights[token_idx, topk_slot].unsqueeze(1)  # expand dims for broadcast
+            expert_output = expert_output * dispatched_weights
+            # Scatter the processed outputs back to the proper positions.
+            results[token_idx] += expert_output
+        '''
+        
         for i, expert in enumerate(self.experts):
             if i < self.n_shared_experts:
                 # always activate shared experts
@@ -180,6 +212,7 @@ class MoE(nn.Module):
                 )
                 output, _ = expert(inputs_squashed[batch_idx])
                 results[batch_idx] += weights[batch_idx, nth_expert, None] * output
+        '''
         return results.view_as(inputs), {
             "router_logits": router_logits,
             "selected_experts": selected_experts,

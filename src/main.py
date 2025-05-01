@@ -5,7 +5,6 @@ import random
 import os 
 import schedulefree
 from distributed.shampoo import Shampoo
-
 import numpy as np
 import torch
 import wandb
@@ -16,6 +15,7 @@ import distributed
 from models.utils import get_model
 from optim.base import train
 from optim.utils import cos_inf_schedule, wsd_schedule
+from optimizers.distributed_shampoo import DistributedShampoo, AdamGraftingConfig
 
 # Suppress warnings from torch.distributed
 #import torch._dynamo
@@ -147,8 +147,7 @@ def main(args):
     params_cnt = distributed_backend.get_raw_model(model).get_num_params()
     print("number of parameters: %.2fM" % (params_cnt / 1e6,))
     print("number of optimized parameters: %.2fM" % (optimized_params_cnt / 1e6,))
-
-
+  
     if args.wandb and distributed_backend.is_master_process():
         wandb.log(
             {"parameters": params_cnt, "optimized_parameters": optimized_params_cnt}
@@ -171,15 +170,25 @@ def main(args):
         )
     elif args.opt == "Shampoo":
         # Shampoo optimizer - It requires the learning rate, momentum, weight_decay, epsilon and update frequency.
-        opt = Shampoo(
-            group_specs,
-            lr=args.lr,
-            momentum=getattr(args, "shampoo_momentum", 0.0),
-            weight_decay=args.weight_decay,
-            epsilon=getattr(args, "shampoo_epsilon", 1e-4),
-            update_freq=getattr(args, "shampoo_update_freq", 25),
-        )
 
+        opt = DistributedShampoo(
+            group_specs,                       # your param groups
+            lr=args.lr,                        # same base LR as before
+            betas=(args.beta1, args.beta2),    # EMA for Shampoo’s accumulators
+            epsilon=args.eps,                  # Shampoo’s regularizer (match your old eps)
+            weight_decay=args.weight_decay,    # decoupled (AdamW‑style) decay
+            use_decoupled_weight_decay=True,
+
+            # graft onto AdamW’s diagonal update:
+            grafting_config=AdamGraftingConfig(
+                beta2=args.beta2,              # match your old AdamW beta2
+                epsilon=args.eps,              # match your old AdamW eps
+            ),
+
+            # Shampoo performance knobs (tune or expose via args as needed):
+            max_preconditioner_dim=getattr(args, "max_preconditioner_dim", 768),
+            precondition_frequency=getattr(args, "precondition_frequency", 100),
+        )
     else:
         opt = torch.optim.SGD(
             group_specs, 
