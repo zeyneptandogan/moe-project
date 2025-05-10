@@ -103,7 +103,7 @@ def main(args):
     param_name_mapping = {p_name: p for p_name, p in model.named_parameters()}
     optimized_params_cnt = 0
 
-    if args.moe:
+    if args.moe and not args.ratio_update_lr:
         updated_group_specs = []
         for spec in group_specs:
             mlp_found = False
@@ -131,6 +131,69 @@ def main(args):
             else:
                 updated_group_specs.append(spec)
         group_specs = updated_group_specs
+
+    
+            
+    if args.moe and args.ratio_update_lr:
+        updated_group_specs = []
+
+        num_experts          = args.moe_num_experts        
+        expert_lr_base       = args.expert_lr                
+        global_lr            = args.lr
+
+        # 1.  Prepare an empty list of lists, one slot per expert
+        expert_param_lists = [[] for _ in range(num_experts)]
+        router_params      = []      
+        global_params      = []      
+
+        # 2.  Traverse *all* parameters in the existing specs
+        for spec in group_specs:
+            for param in spec.get("params", []): 
+                if ".mlp.experts." in param:
+                    # expected pattern "...mlp.experts.<id>."
+                    eid_str = param.split(".mlp.experts.")[1].split(".")[0]
+                    eid     = int(eid_str)
+                    expert_param_lists[eid].append(param)
+                elif ".mlp.router." in param:
+                    router_params.append(param)
+                else:
+                    global_params.append(param)
+            
+        # 3.  One group per expert
+        for eid, plist in enumerate(expert_param_lists):
+            updated_group_specs.append({
+                "params":    plist,
+                "lr":        expert_lr_base,
+                "group":     "expert",
+                "expert_id": eid,
+            })
+
+        if router_params:
+            updated_group_specs.append({
+                "params": router_params,
+                "lr":     expert_lr_base,      
+                "group":  "router"
+            })
+
+        # 4.  The global / non-expert group
+        updated_group_specs.append({
+            "params": global_params,
+            "lr":     global_lr,
+            "group":  "global"
+        })
+        group_specs = updated_group_specs
+
+    for i, spec in enumerate(group_specs):
+        grp = spec.get("group", "<no group>")
+        lr  = spec.get("lr",     None)
+        n   = len(spec.get("params", []))
+
+        if isinstance(lr, (float, int)):
+            lr_str = f"{lr:.2e}"
+        else:
+            lr_str = str(lr)
+
+        print(f"Group #{i:2d}: name={grp:8s}  lr={lr_str:>8s}  #params={n}")
 
     for g in group_specs:
         params = []

@@ -229,4 +229,7 @@ def parse_args(base_parser, args, namespace):
                     help="Shampoo numerical‑stability epsilon")
     parser.add_argument("--shampoo_decay",type=float, default=0.9,
                         help="EMA decay rate for Shampoo covariances")
+    
+    #for load based lr update
+    parser.add_argument("--ratio-update-lr", action="store_true")
     return parser.parse_args(args, namespace)

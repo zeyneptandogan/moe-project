@@ -192,7 +192,7 @@ def eval(
         maxvio_global_list = []
         for layer_idx, se_list in enumerate(selected_experts_global_list):
             concat_tensor = torch.cat(se_list, dim=0)  # Concatenate along token dimension.
-            maxvio = compute_maxvio(concat_tensor, num_non_shared_experts)
+            maxvio, load = compute_maxvio(concat_tensor, num_non_shared_experts)
             maxvio_global_list.append(maxvio)
             per_layer_maxvio_global[f"val/maxvioglobal_layer_{layer_idx}"] = maxvio.item()
         avg_maxvio_global = sum(maxvio_global_list) / len(maxvio_global_list)
@@ -434,4 +434,4 @@ def compute_maxvio(selected_experts: torch.Tensor, num_experts: int) -> torch.Te
         
     max_load = load_counts.max()    
     maxvio = (max_load - expected_load) / expected_load    
-    return maxvio
+    return maxvio, load_counts  #return load counts for ratio calc

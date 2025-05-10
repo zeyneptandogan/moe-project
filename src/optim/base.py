@@ -128,6 +128,14 @@ def train(
     )
 
     while curr_iter <= cfg.iterations:
+
+        # Create / reset step_counts once per optimizer step
+        if cfg.moe and cfg.ratio_update_lr:
+            num_non_shared_experts = cfg.moe_num_experts - cfg.moe_num_shared_experts
+            step_counts = torch.zeros(
+                num_non_shared_experts, device=cfg.device, dtype=torch.float32
+            )
+
         # Save permanent checkpoint
         if cfg.permanent_ckpt_interval > 0:
             if curr_iter % cfg.permanent_ckpt_interval == 0:
@@ -214,10 +222,12 @@ def train(
                 maxvio_list = []
                 for idx, selected_experts in enumerate(selected_experts_list):
                     #print(f"Layer {idx}: selected_experts shape: {selected_experts.shape}")
-                    maxvio = compute_maxvio(selected_experts, num_non_shared_experts)
+                    maxvio, load = compute_maxvio(selected_experts, num_non_shared_experts)
                     maxvio_list.append(maxvio)
                     #print(f"Layer {idx}: MaxViobatch = {maxvio.item():.4f}")
-                
+                    if cfg.ratio_update_lr:
+                        step_counts += load
+    
                 avg_maxvio = sum(maxvio_list) / len(maxvio_list)
                 #print(f"Microstep {microstep_idx}: Loss = {loss.item():.4f}, Average MaxViobatch = {avg_maxvio.item():.4f}\n")
                 if cfg.wandb:
@@ -226,6 +236,7 @@ def train(
                             "train/maxviobatch": avg_maxvio.item(),
                             **{f"train/maxviobatch_layer_{i}": mv.item() for i, mv in enumerate(maxvio_list)}
                         })
+
 
                 if cfg.aux_loss_free:
                     for layer_idx, selected_experts in enumerate(selected_experts_list):
@@ -291,6 +302,33 @@ def train(
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt.step()
         scheduler.step()
+
+        # lr_expert = ratio_load * lr_global to take effect on the next weight update
+        if cfg.moe and cfg.ratio_update_lr:
+            lr_global = next(g["lr"] for g in opt.param_groups
+                    if g.get("group") == "global")
+
+            # ratio = token_count_i / mean_token_count   (shape [num_experts])
+            ratio = step_counts / (step_counts.mean())
+
+            #ratio = ratio.clamp(cfg.min_ratio, cfg.max_ratio) -??
+            #log to wandb
+            if cfg.wandb and distributed_backend.is_master_process():
+                # convert to plain Python list
+                ratio_vals = ratio.cpu().tolist()
+                # pack into a single dict
+                ratio_dict = {
+                    f"lr_ratio/expert_{i}": rv
+                    for i, rv in enumerate(ratio_vals)
+                }
+                wandb.log(ratio_dict)
+
+            k = 0
+            for g in opt.param_groups:
+                if g.get("group") == "expert":
+                    g["lr"] = (ratio[k] * lr_global).item()
+                    k += 1
+
         opt.zero_grad(set_to_none=True)
         if cfg.weight_average:
             weight_averager.step(not_compiled_model, distributed_backend.is_master_process())
@@ -301,46 +339,68 @@ def train(
         curr_iter += 1
         progress_bar.update(1)  # Update tqdm progress bar
 
-        if (
-            cfg.log_interval
-            and curr_iter % cfg.log_interval == 0
-            and distributed_backend.is_master_process()  # Only log on master rank
-        ):
+        if (cfg.log_interval and curr_iter % cfg.log_interval == 0 
+            and distributed_backend.is_master_process()):
+
             train_loss = loss.detach().cpu().item() * cfg.acc_steps
-            train_aux_losses = {
-                f"train/{k}": v for k, v in outputs["aux_losses"].items()
-            }
+            train_aux_losses = {f"train/{k}": v for k, v in outputs["aux_losses"].items()}
 
             global_lr = None
-            expert_lr = None
+            router_lr = None
+            expert_lrs = []   # list of (expert_id, lr)
 
-            for param_group in opt.param_groups:
-                if param_group.get("group") == "expert":
-                    expert_lr = param_group["lr"]
-                elif param_group.get("group") == "global":
-                    global_lr = param_group["lr"]
+            for pg in opt.param_groups:
+                g = pg.get("group")
+                if g == "global":
+                    global_lr = pg["lr"]
+                elif g == "router":
+                    router_lr = pg["lr"]
+                elif g == "expert":
+                    # if you used per-expert groups, you tagged each with .expert_id
+                    eid = pg.get("expert_id", len(expert_lrs))
+                    expert_lrs.append((eid, pg["lr"]))
 
-            # If no expert group is found, you might set expert_lr to global_lr or skip logging it.
-            if expert_lr is None:
-                expert_lr = global_lr
+            # global and router
+            gls = f"global_lr={global_lr:.2e}"
+            rts = f" router_lr={router_lr:.2e}" if router_lr is not None else ""
+
+            # expert(s)
+            if cfg.ratio_update_lr:
+                expert_lrs = sorted(expert_lrs, key=lambda x: x[0])
+                exp_strs = [f"exp{eid}_lr={lr:.2e}" for eid, lr in expert_lrs]
+            else:
+                single = expert_lrs[0][1] if expert_lrs else global_lr
+                exp_strs = [f"expert_lr={single:.2e}"]
+
+            exp_print = " ".join(exp_strs)
 
             print(
                 f"Train: Iter={curr_iter} ({epoch:0.3f} epochs) "
                 f"train_loss={train_loss:.3f} iter_dt={dt:.2e}s "
-                f"global_lr={global_lr:.2e} expert_lr={expert_lr:.2e}"
+                f"{gls}{rts} {exp_print}"
             )
 
             if cfg.wandb:
                 metrics = {
-                    "iter": curr_iter,
-                    "train/loss": train_loss,
+                    "iter":             curr_iter,
+                    "train/loss":       train_loss,
                     "train/perplexity": 2.71828 ** train_loss,
-                    "global_lr": global_lr,
-                    "iter_dt": dt,
+                    "global_lr":        global_lr,
+                    "iter_dt":          dt,
                     **train_aux_losses,
                 }
-                if expert_lr is not None:
-                    metrics["expert_lr"] = expert_lr # added for moe
+
+                # add router lr if it exists
+                if router_lr is not None:
+                    metrics["router_lr"] = router_lr
+
+                # add per-expert entries
+                if cfg.ratio_update_lr:
+                    for eid, lr in expert_lrs:
+                        metrics[f"train/exp{eid}_lr"] = lr
+                else:
+                    metrics["train/expert_lr"] = exp_strs[0].split("=")[1]  # just the single value
+
                 wandb.log(metrics)
 
     progress_bar.close() 
