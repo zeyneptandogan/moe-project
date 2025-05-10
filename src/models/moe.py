@@ -173,6 +173,8 @@ class MoE(nn.Module):
         for i in range(self.n_shared_experts):
             expert_out, _ = self.experts[i](inputs_squashed)
             results += expert_out
+
+        '''
         unique_experts = torch.unique(selected_experts)
         for expert_id in unique_experts:
             # Create a mask over tokens (rows) and top_k columns.
@@ -212,7 +214,7 @@ class MoE(nn.Module):
                 )
                 output, _ = expert(inputs_squashed[batch_idx])
                 results[batch_idx] += weights[batch_idx, nth_expert, None] * output
-        '''
+        
         return results.view_as(inputs), {
             "router_logits": router_logits,
             "selected_experts": selected_experts,
