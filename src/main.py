@@ -119,7 +119,7 @@ def main(args):
                 "group": "global",  #non-expert
             }
             for param in spec.get('params', []):
-                if '.mlp.experts.' in param or '.mlp.router.' in param:
+                if '.mlp.experts.' in param: # or '.mlp.router.' in param:
                     mlp_param["params"].append(param)
                     mlp_found = True
                 else:
@@ -171,7 +171,7 @@ def main(args):
         if router_params:
             updated_group_specs.append({
                 "params": router_params,
-                "lr":     expert_lr_base,      
+                "lr":     global_lr, #expert_lr_base,      
                 "group":  "router"
             })
 
