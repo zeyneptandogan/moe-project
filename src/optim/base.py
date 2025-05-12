@@ -243,6 +243,13 @@ def train(
                         # print(f"[Layer {layer_idx}] selected_experts shape: {selected_experts.shape}")
                         one_hot = F.one_hot(selected_experts, num_classes=cfg.moe_num_experts)
                         token_assignment = one_hot.max(dim=1)[0]  # shape: [num_tokens, num_experts]
+                        
+                        # since top k selection is for different experts all the time, using max is fine
+                        # but if we allow the same expert selection more than once in top k
+
+                        #flat_sel = selected_experts.reshape(-1)          # [num_tokens × top_k]
+                        #c_i = torch.bincount(flat_sel, minlength=cfg.moe_num_experts).float()  # [N]
+
                         # print(f"[Layer {layer_idx}] token_assignment shape: {token_assignment.shape}")
 
                         # Count tokens assigned to each expert: c_i
@@ -297,20 +304,21 @@ def train(
             log_dict["Overall Grad Norm"] = overall_grad_norm
             if distributed_backend.is_master_process():
                 wandb.log(log_dict)
-
-        if cfg.grad_clip != 0.0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-        opt.step()
-        scheduler.step()
+                
+            
 
         # lr_expert = ratio_load * lr_global to take effect on the next weight update
         if cfg.moe and cfg.ratio_update_lr:
+            # take avg across microsteps
+            avg_counts = step_counts / cfg.acc_steps    
+
+            #get the load based on count/ the count when uniform distribution 
+            # ratio = token_count_i / mean_token_count   (shape [num_experts])
+            ratio = avg_counts / avg_counts.mean()     
+
             lr_global = next(g["lr"] for g in opt.param_groups
                     if g.get("group") == "global")
-
-            # ratio = token_count_i / mean_token_count   (shape [num_experts])
-            ratio = step_counts / (step_counts.mean())
-
+            
             #ratio = ratio.clamp(cfg.min_ratio, cfg.max_ratio) -??
             #log to wandb
             if cfg.wandb and distributed_backend.is_master_process():
@@ -328,6 +336,11 @@ def train(
                 if g.get("group") == "expert":
                     g["lr"] = (ratio[k] * lr_global).item()
                     k += 1
+
+        if cfg.grad_clip != 0.0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+        opt.step()
+        scheduler.step()
 
         opt.zero_grad(set_to_none=True)
         if cfg.weight_average:
