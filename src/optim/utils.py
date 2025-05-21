@@ -424,7 +424,7 @@ def compute_maxvio(selected_experts: torch.Tensor, num_experts: int) -> torch.Te
     """
     # Flatten selected experts (if top_k > 1)
     selected = selected_experts.view(-1)
-
+    #load_counts are as follows : 0th idx shows the load of expert id 0 and so on.
     load_counts = torch.bincount(selected, minlength=num_experts).float() # Count tokens assigned to each expert.
     #print("Load counts per expert:", load_counts)
     

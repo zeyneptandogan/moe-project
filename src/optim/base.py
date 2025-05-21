@@ -316,8 +316,6 @@ def train(
             # ratio = token_count_i / mean_token_count   (shape [num_experts])
             ratio = avg_counts / avg_counts.mean()     
 
-            lr_global = next(g["lr"] for g in opt.param_groups
-                    if g.get("group") == "global")
             
             #ratio = ratio.clamp(cfg.min_ratio, cfg.max_ratio) -??
             #log to wandb
@@ -326,16 +324,21 @@ def train(
                 ratio_vals = ratio.cpu().tolist()
                 # pack into a single dict
                 ratio_dict = {
-                    f"lr_ratio/expert_{i}": rv
+                    f"lr_ratio/non_shared_expert_{i}": rv
                     for i, rv in enumerate(ratio_vals)
                 }
                 wandb.log(ratio_dict)
 
-            k = 0
-            for g in opt.param_groups:
-                if g.get("group") == "expert":
-                    g["lr"] = (ratio[k] * lr_global).item()
-                    k += 1
+            offset      = cfg.moe_num_shared_experts
+            lr_global   = next(pg["lr"] for pg in opt.param_groups
+                            if pg.get("group") == "global")
+
+            for pg in opt.param_groups:
+                if pg.get("group") == "expert":
+                    gid        = pg["expert_id"]          # 0 … num_experts-1 (global)
+                    lid        = gid - offset             # --> 0 … num_non_shared-1
+                    if 0 <= lid < ratio.numel():          # skip the shared experts
+                        pg["lr"] = (ratio[lid] * lr_global).item()
 
         if cfg.grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
