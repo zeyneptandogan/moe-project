@@ -8,6 +8,8 @@ from distributed.shampoo import Shampoo
 import numpy as np
 import torch
 import wandb
+from collections import defaultdict
+
 
 import config
 from data.utils import DataReader, get_dataset
@@ -37,6 +39,9 @@ def main(args):
     if "cuda" in args.device:
         torch.cuda.set_device(torch.device(args.device))
     # torch.use_deterministic_algorithms(True)  # CUBLAS_WORKSPACE_CONFIG=:4096:8
+
+    if args.moe and args.ratio_update_lr:
+        print('***LOAD BASED LR UPDATE FOR EXPERTS***')
 
     exp_name = get_exp_name(args, distributed_backend)
     exp_dir = Path(args.results_base_folder) / exp_name
@@ -142,7 +147,7 @@ def main(args):
         global_lr            = args.lr
 
         # 1.  Prepare an empty list of lists, one slot per expert
-        expert_param_lists = [[] for _ in range(num_experts)]
+        expert_param_dict = defaultdict(list)    # key: (layer_id, expert_id)
         router_params      = []      
         global_params      = []      
 
@@ -150,23 +155,26 @@ def main(args):
         for spec in group_specs:
             for param in spec.get("params", []): 
                 if ".mlp.experts." in param:
-                    # expected pattern "...mlp.experts.<id>."
-                    eid_str = param.split(".mlp.experts.")[1].split(".")[0]
-                    eid     = int(eid_str)
-                    expert_param_lists[eid].append(param)
+                    #  "...mlp.experts.<id>."
+                    layer_id = int(param.split("transformer.h.")[1].split(".")[0])
+                    expert_id = int(param.split(".mlp.experts.")[1].split(".")[0])
+                    expert_param_dict[(layer_id, expert_id)].append(param)
                 elif ".mlp.router." in param:
                     router_params.append(param)
                 else:
                     global_params.append(param)
             
         # 3.  One group per expert
-        for eid, plist in enumerate(expert_param_lists):
-            updated_group_specs.append({
-                "params":    plist,
-                "lr":        expert_lr_base,
-                "group":     "expert",
-                "expert_id": eid,
-            })
+        for (layer_id, expert_id), plist in expert_param_dict.items():
+            updated_group_specs.append(
+                {
+                    "params": plist,
+                    "lr":     expert_lr_base,
+                    "group":  "expert",
+                    "layer_id": layer_id,
+                    "expert_id": expert_id,
+                }
+            )
 
         if router_params:
             updated_group_specs.append({

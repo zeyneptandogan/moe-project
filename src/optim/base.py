@@ -8,6 +8,7 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 import wandb
+from collections import defaultdict
 
 from logger.logger import DynamicsLogger
 from optim.weight_averaging import (
@@ -201,6 +202,7 @@ def train(
 
         # Train model
         t_start = time.perf_counter_ns()
+        expert_ratio_lists    = defaultdict(list) 
         for microstep_idx in range(cfg.acc_steps):  # gradient accumulation
             x, y = get_batch(train_reader, device=cfg.device)
             with type_ctx:
@@ -225,8 +227,13 @@ def train(
                     maxvio, load = compute_maxvio(selected_experts, num_non_shared_experts)
                     maxvio_list.append(maxvio)
                     #print(f"Layer {idx}: MaxViobatch = {maxvio.item():.4f}")
+                    total_tokens  = load.sum().float()                  # scalar
+                    uniform_load  = total_tokens / num_non_shared_experts
+                    load_ratio    = load.float() / uniform_load   
+
                     if cfg.ratio_update_lr:
-                        step_counts += load
+                        for expert_id, ratio in enumerate(load_ratio.tolist()):
+                            expert_ratio_lists[(idx, expert_id)].append(ratio)
     
                 avg_maxvio = sum(maxvio_list) / len(maxvio_list)
                 #print(f"Microstep {microstep_idx}: Loss = {loss.item():.4f}, Average MaxViobatch = {avg_maxvio.item():.4f}\n")
@@ -309,36 +316,27 @@ def train(
 
         # lr_expert = ratio_load * lr_global to take effect on the next weight update
         if cfg.moe and cfg.ratio_update_lr:
-            # take avg across microsteps
-            avg_counts = step_counts / cfg.acc_steps    
+            offset     = cfg.moe_num_shared_experts
+            lr_global  = next(
+                pg["lr"]
+                for pg in opt.param_groups
+                if pg.get("group") == "global"
+            )
 
-            #get the load based on count/ the count when uniform distribution 
-            # ratio = token_count_i / mean_token_count   (shape [num_experts])
-            ratio = avg_counts / avg_counts.mean()     
-
-            
-            #ratio = ratio.clamp(cfg.min_ratio, cfg.max_ratio) -??
-            #log to wandb
-            if cfg.wandb and distributed_backend.is_master_process():
-                # convert to plain Python list
-                ratio_vals = ratio.cpu().tolist()
-                # pack into a single dict
-                ratio_dict = {
-                    f"lr_ratio/non_shared_expert_{i}": rv
-                    for i, rv in enumerate(ratio_vals)
-                }
-                wandb.log(ratio_dict)
-
-            offset      = cfg.moe_num_shared_experts
-            lr_global   = next(pg["lr"] for pg in opt.param_groups
-                            if pg.get("group") == "global")
-
+            # update each expert param‐group in place based on layer-expert combinations
             for pg in opt.param_groups:
                 if pg.get("group") == "expert":
-                    gid        = pg["expert_id"]          # 0 … num_experts-1 (global)
-                    lid        = gid - offset             # --> 0 … num_non_shared-1
-                    if 0 <= lid < ratio.numel():          # skip the shared experts
-                        pg["lr"] = (ratio[lid] * lr_global).item()
+                    layer_id   = pg["layer_id"]
+                    expert_id  = pg["expert_id"]
+
+                    # only adjust non‐shared experts
+                    lid = expert_id - offset
+                    if lid >= 0:
+                        # pull the list of 8 ratio values you accumulated
+                        ratios = expert_ratio_lists.get((layer_id, lid), [])
+                        if ratios:
+                            avg_ratio = sum(ratios) / len(ratios)
+                            pg["lr"]  = avg_ratio * lr_global
 
         if cfg.grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
