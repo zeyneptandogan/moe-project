@@ -205,6 +205,7 @@ def train(
         expert_ratio_lists    = defaultdict(list) 
         for microstep_idx in range(cfg.acc_steps):  # gradient accumulation
             x, y = get_batch(train_reader, device=cfg.device)
+            token_count_in_batch   = x.numel()
             with type_ctx:
                 with distributed_backend.get_context_for_microstep_forward(
                     model=model,
@@ -226,10 +227,9 @@ def train(
                     #print(f"Layer {idx}: selected_experts shape: {selected_experts.shape}")
                     maxvio, load = compute_maxvio(selected_experts, num_non_shared_experts)
                     maxvio_list.append(maxvio)
+                    # total_tokens  = load.sum().float()    -> this equals to topk* # of tokens in the batch
                     #print(f"Layer {idx}: MaxViobatch = {maxvio.item():.4f}")
-                    total_tokens  = load.sum().float()                  # scalar
-                    uniform_load  = total_tokens / num_non_shared_experts
-                    load_ratio    = load.float() / uniform_load   
+                    load_ratio    = load.float() / token_count_in_batch   
 
                     if cfg.ratio_update_lr:
                         for expert_id, ratio in enumerate(load_ratio.tolist()):
