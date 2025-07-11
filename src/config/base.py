@@ -121,7 +121,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--datasets-dir", type=str, default="./datasets/")
     parser.add_argument(
         "--dataset",
-        default="slimpajama",
+        default="fineweb",
         choices=[
             "wikitext",
             "shakespeare-char",
