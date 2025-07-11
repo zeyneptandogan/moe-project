@@ -164,6 +164,10 @@ def main(args):
                 else:
                     global_params.append(param)
             
+        num_expert_groups = len(expert_param_dict)
+        num_expert_params = sum(len(plist) for plist in expert_param_dict.values())
+        print(f"[DEBUG] {num_expert_groups} expert groups, total {num_expert_params} expert parameters")
+
         # 3.  One group per expert
         for (layer_id, expert_id), plist in expert_param_dict.items():
             updated_group_specs.append(
