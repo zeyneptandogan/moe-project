@@ -1,21 +1,23 @@
-# Codebase: Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations
-This is the codebase accompanying the paper [*Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations*](https://arxiv.org/abs/2405.18392). The code is largely based on our framework [llm-baselines](https://github.com/epfml/llm-baselines) to do research on training LLMs as an extension of [NanoGPT](https://github.com/karpathy/nanogpt).
+# Codebase: Finding the Right Optimization for Mixture-of-Experts
+This repository accompanies the semester project **Finding the Right Optimization for Mixture-of-Experts**, authored by Zeynep Tandogan, Alexander Hägele, and Prof. Martin Jaggi from EPFL.
 
-**Abstract:**
-> Scale has become a main ingredient in obtaining strong machine learning models. As a result, understanding a model's scaling properties is key to effectively designing both the right training setup as well as future generations of architectures. In this work, we argue that scale and training research has been needlessly complex due to reliance on the cosine schedule, which prevents training across different lengths for the same model size. We investigate the training behavior of a direct alternative - constant learning rate and cooldowns - and find that it scales predictably and reliably similar to cosine. Additionally, we show that stochastic weight averaging yields improved performance along the training trajectory, without additional training costs, across different scales. Importantly, with these findings we demonstrate that scaling experiments can be performed with significantly reduced compute and GPU hours by utilizing fewer but reusable training runs.
 
-<p align="center">
-  <img src="assets/cos_vs_cooldown.png" alt="Cosine vs. Cooldown Schedules" style="width:70%">
-</p>
+## Abstract
+Mixture‐of‐Experts (MoE) models offer massive capacity at reduced compute by routing each input to a subset of “experts,” but in practice they suffer from severe load imbalance, expressivity loss in infrequently activated experts, and a trade‐off between strict balancing and overall performance. In this work, we perform a comprehensive study of MoE optimization techniques, including:
 
-**Figure:** Whereas the cosine learning rate follows a slow annealing, the alternative schedule of constant LR + cooldown is characterized by a fast drop towards the end of training. This cooldown phase initiates a sharp decrease in loss to match cosine; the training perplexity follows the same behavior.
+1. Differentiated learning-rate schedules for expert vs. non-expert parameters.  
+2. Systematic tuning of auxiliary loss coefficients along with loss-free balancing methods.  
+3. Comparison of optimizers (e.g., AdamW vs. Shampoo) and activation functions (sigmoid vs. softmax).  
+4. Varying the number of experts to assess capacity vs. utilization trade-offs.  
 
-<p align="center">
-  <img align="center" src="assets/scaling_curves.png" alt="Loss Curve Envelopes" style="width:45%">
-  <img align="center" src="assets/savings.png" vertical-align="center" alt="Loss Curve Envelopes" style="width:51%">
-</p>
+Our experiments reveal that certain configurations yield improvements in validation loss, perplexity, and accuracy, while other hyperparameter choices can lead to modest degradations. These findings inform best practices for training efficient and balanced MoE systems.
 
-**Figure:** The cooldown schedule allows to perform scaling law experiments for a fraction of the compute. Instead of having to train from scratch (cosine), we launch one long run and perform cooldowns from intermediate checkpoints after training.
+
+## Key Contributions
+- **Auxiliary Loss vs. Loss-Free Balancing**: Ablation of tuning coefficients and evaluation of loss-free methods for expert load balance.  
+- **Expert-Specific LR Schedules**: Implementation of static and load-adaptive learning rates for expert and non-expert parameters.  
+- **Optimizer Comparison**: Benchmarking AdamW against Shampoo to understand their effects on expert utilization and convergence.  
+- **Scalability Analysis**: Investigation of the impact of varying the number of experts on model performance and training efficiency.
 
 
 ## Quickstart 
@@ -23,48 +25,52 @@ This is the codebase accompanying the paper [*Scaling Laws and Compute-Optimal T
 Create a conda environment and install dependencies (we recommend Python 3.10):
 
 ```bash
-conda create -n env python=3.10
-conda activate env
+conda create -n moe-env python=3.12.9 -y
+conda activate moe-env
 pip install -r requirements.txt
 ```
 
-Run a simple training on the SlimPajama 6B dataset:
+Run a simple training on the Fineweb EDU dataset:
 ```bash
 python ./src/main.py
 ```
 
-The above command trains a 213.34M parameters model with the Llama-style architecture. We recommend to use the `--compile` flag that speeds up training noticeably (up to 20% in our setup).
+You can see the default parameters and additional parameters in src/config/base.py.
 
-## LR Schedules and Weight Averaging
-In order to use the cooldown schedule:
+Sample Run (including aux loss free method with load based LR update)
+
 ```bash
-python ./src/main.py --compile --scheduler wsd --wsd-fract-decay 0.2
-```
-The argument `wsd-fract-decay` controls the fraction of the cooldown phase, and the functional form of the cooldown is handled with the argument `decay-type`.
-
-If you want to use stochastic weight averaging:
-```bash
-python ./src/main.py --compile --scheduler wsd --wsd-fract-decay 0.2 --weight-average
-```
-With this, the averaging is done automatically in slots of 500 steps; the model averages are all stored (beware of the disk space). The frequency is handled via the arguments `--wa-interval` (average every k steps) and `--wa-horizon` (the length of the horizon/window).
-
-Moreover, the argument `wa-sweep-horizon` helps to automatically sweep the horizon to find the best performance, but may slow down training.
-
-## FLOPS helpers
-The [`flops.ipynb`](flops.ipynb) provides a few helpers and functionalities for FLOPS computations of transformer configurations.
-
-# Contact & Reference
-Please do not hesitate to reach out to us if you have questions!
-
-In order to cite this work:
-```
-@article{hagele2024scaling,
-  author  = {Alexander H\"agele and Elie Bakouch and Atli Kosson and Loubna Ben Allal and Leandro Von Werra and Martin Jaggi},
-  title   = {{Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations}},
-  year    = {2024},
-  journal = {Advances in Neural Information Processing Systems},
-  url     = {http://arxiv.org/abs/2405.18392}
-}
+torchrun --nproc-per-node=1 src/main.py \
+  --wandb-project run_moe \
+  --dataset fineweb \
+  --distributed-backend nccl \
+  --latest-ckpt-interval 1000 \
+  --model llama \
+  --compile \
+  --lr 0.0001 \
+  --expert_lr 0.00001 \
+  --iterations 2000 \
+  --moe \
+  --plot-router-logits \
+  --batch-size 5 \
+  --acc-steps 4 \
+  --aux-loss-free \
+  --ratio-update-lr
 ```
 
+#### Parameter Details (important flags for the experiments)
+- `--lr`: Base learning rate for non-expert parameters.  
+- `--expert_lr`: Learning rate for expert parameters.  
+- `--opt [adamw|sgd|SFAdamW|Shampoo]`: Choice of optimizer (default: adamw).  
+- `--eps`: Shampoo numerical-stability epsilon (default: 1e-8).  
+- `--shampoo_decay`: EMA decay rate for Shampoo covariances (default: 0.9).  
+- `--aux-loss-free`: Enable the loss-free load balancing method (no auxiliary loss).  
+- `--bias-update-rate`: Router bias learning rate when using loss-free balancing (default: 1e-3).  
+- `--moe-aux-loss-factor`: Weight of the auxiliary balancing loss in MoE routing (default: 0.1).  
+- `--ratio-update-lr`: Turn on load-adaptive LR updates, scaling each expert’s LR by its usage ratio.
 
+## Reports & Presentation
+You can find the project deliverables in the repo:
+
+- [MoE Final Report (PDF)](zeyneptandogan_moe_report.pdf)  
+- [MoE Presentation (PDF)](zeyneptandogan_moe_presentation.pdf)  
